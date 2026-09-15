@@ -1,0 +1,46 @@
+# reverse-tool Policy Routing Configuration
+# Default mode: hybrid (Manual exact > Manual domain > Manual CIDR > Domain suffix > Auto LAN > WAN)
+mode = "hybrid"
+
+[defaults]
+unknown = "wan"
+lab_failure = "drop"
+auto_failback = true
+table_id = 52000
+rule_priority = 12000
+
+[wan]
+# "auto" uses default route interface, or specify e.g. ["wlan0"]
+interfaces = ["auto"]
+
+# Define segmented lab networks
+[[networks]]
+name = "malware-lab"
+role = "lan"
+interfaces = ["eth1", "wlan1"]
+auto_subnets = true
+preferred = ["eth1", "wlan1"]
+domains = ["~malware.lab", "~victim.corp"]
+dns = ["192.168.56.1"]
+
+[[networks]]
+name = "ctf-lab"
+role = "lan"
+interfaces = ["eth0"]
+auto_subnets = true
+preferred = ["eth0"]
+domains = ["~ctf.local"]
+dns = ["10.10.10.1"]
+
+# Explicit manual targets
+[[targets]]
+name = "victim-server"
+cidr = "192.168.56.20/32"
+via = ["eth1", "wlan1"]
+fallback = "drop"
+
+[[targets]]
+name = "ctf-subnet"
+cidr = "10.10.10.0/24"
+via = ["eth0"]
+fallback = "drop"

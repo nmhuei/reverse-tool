@@ -1,0 +1,23 @@
+[Unit]
+Description=reverse-tool Policy Routing Daemon
+Documentation=https://github.com/reverse-tool
+After=network.target network-online.target NetworkManager.service systemd-resolved.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/reversed -c /etc/reverse-tool/config.toml
+Restart=on-failure
+RestartSec=3s
+
+# Security and Least Privilege model: Only CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+
+# Filesystem sandboxing
+ProtectSystem=full
+ProtectHome=read-only
+RuntimeDirectory=reverse-tool
+
+[Install]
+WantedBy=multi-user.target

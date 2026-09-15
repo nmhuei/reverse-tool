@@ -1,0 +1,32 @@
+[package]
+name = "reverse-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Application orchestration, daemon, reconciler, and CLI for reverse-tool"
+
+[dependencies]
+reverse-core = { workspace = true }
+reverse-linux = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+ipnet = { workspace = true }
+libc = { workspace = true }
+
+[[bin]]
+name = "reverse-tool"
+path = "src/bin/reverse-tool.rs"
+
+[[bin]]
+name = "reversed"
+path = "src/bin/reversed.rs"
+
+[dev-dependencies]
+tempfile = { workspace = true }

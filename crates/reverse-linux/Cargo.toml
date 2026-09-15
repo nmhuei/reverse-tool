@@ -1,0 +1,22 @@
+[package]
+name = "reverse-linux"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Linux system adapter using rtnetlink, socket2, and DNS backend integrations"
+
+[dependencies]
+reverse-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rtnetlink = { workspace = true }
+socket2 = { workspace = true }
+ipnet = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
