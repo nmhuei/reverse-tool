@@ -43,7 +43,9 @@ impl Reconciler {
 
         let diff = RoutePlanner::plan_diff(&actual, desired)?;
 
-        if dry_run || diff.is_empty() {
+        let firewall_changed = runtime_state.firewall_whitelist != desired.firewall_whitelist;
+
+        if dry_run || (diff.is_empty() && !firewall_changed) {
             return Ok(ReconcileReport {
                 diff,
                 dry_run,
@@ -155,6 +157,7 @@ impl Reconciler {
         // 6. Commit state
         runtime_state.routes_owned = desired.routes.clone();
         runtime_state.rules_owned = desired.rules.clone();
+        runtime_state.firewall_whitelist = desired.firewall_whitelist.clone();
         if let Some(first_rule) = desired.rules.first() {
             runtime_state.allocated_table = first_rule.table;
             runtime_state.rule_priority = first_rule.priority;
@@ -192,24 +195,48 @@ impl Reconciler {
     }
 
     pub fn reset(&self) -> Result<(), LinuxError> {
-        let state = self.state_manager.load()?;
+        // Always clean up any strict egress firewall whitelist chains created by us
+        let _ = reverse_linux::FirewallController::cleanup_all();
 
-        // Delete all routes owned by us in the allocated table
-        let routes = self.netlink.get_table_routes(state.allocated_table)?;
-        for route in routes {
-            let _ = self.netlink.delete_route(&route);
+        // Only delete kernel routes/rules if we have a recorded owned state file
+        if !self.state_manager.exists() {
+            return Ok(());
         }
 
-        // Delete RPDB rule
+        let state = self.state_manager.load()?;
+
+        // Delete specifically the routes owned by us
+        for route in &state.routes_owned {
+            let _ = self.netlink.delete_route(route);
+        }
+
+        // Delete RPDB rules owned by us
+        for rule in &state.rules_owned {
+            let _ = self.netlink.remove_rpdb_rule(rule.priority, rule.table);
+        }
         let _ = self
             .netlink
             .remove_rpdb_rule(state.rule_priority, state.allocated_table);
 
-        // Clean up strict egress firewall whitelist chains
-        let _ = reverse_linux::FirewallController::cleanup_all();
-
         // Clear state file
         self.state_manager.clear()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_reset_without_state_file_does_not_error() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp); // ensures file does not exist
+
+        let sm = StateManager::with_path(path);
+        let reconciler = Reconciler::new(sm);
+        assert!(reconciler.reset().is_ok());
     }
 }

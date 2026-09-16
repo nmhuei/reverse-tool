@@ -60,10 +60,16 @@ impl ReversedDaemon {
             tracing::warn!("Starting daemon with warnings: {}", e);
         }
 
-        // 1. Reset any stale policy routes or firewall rules from prior runs or crashes
-        let startup_reconciler = Reconciler::new(StateManager::new());
-        if let Err(e) = startup_reconciler.reset() {
-            tracing::warn!("Startup reset notice: {}", e);
+        // 1. Reset any stale policy routes or firewall rules from prior crashes if state file exists
+        let state_mgr = StateManager::new();
+        if state_mgr.exists() {
+            tracing::info!(
+                "Found leftover state file from prior run; resetting stale routes and rules..."
+            );
+            let startup_reconciler = Reconciler::new(state_mgr);
+            if let Err(e) = startup_reconciler.reset() {
+                tracing::warn!("Startup reset notice: {}", e);
+            }
         }
 
         // Clean existing socket

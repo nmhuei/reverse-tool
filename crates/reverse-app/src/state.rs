@@ -10,6 +10,8 @@ pub struct RuntimeState {
     pub rule_priority: u32,
     pub routes_owned: Vec<Route>,
     pub rules_owned: Vec<RpdbRule>,
+    #[serde(default)]
+    pub firewall_whitelist: Vec<(String, String, Option<u16>)>,
     pub generation: u64,
     pub last_reconcile_epoch: u64,
 }
@@ -21,6 +23,7 @@ impl Default for RuntimeState {
             rule_priority: 12000,
             routes_owned: vec![],
             rules_owned: vec![],
+            firewall_whitelist: vec![],
             generation: 1,
             last_reconcile_epoch: 0,
         }
@@ -55,6 +58,10 @@ impl StateManager {
 
     pub fn state_file_path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn exists(&self) -> bool {
+        self.path.exists()
     }
 
     pub fn load(&self) -> Result<RuntimeState, LinuxError> {
