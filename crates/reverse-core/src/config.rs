@@ -136,6 +136,99 @@ impl Config {
     pub fn to_toml_string(&self) -> Result<String, CoreError> {
         toml::to_string_pretty(self).map_err(|e| CoreError::Config(e.to_string()))
     }
+
+    /// Merges targets and interface mappings from a .env file content
+    pub fn apply_env_str(&mut self, env_content: &str) {
+        let mut target_ips = Vec::new();
+        let mut target_subnets = Vec::new();
+        let mut target_iface: Option<String> = None;
+        let mut wan_iface: Option<String> = None;
+        let mut fallback = "drop".to_string();
+
+        for line in env_content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, val)) = line.split_once('=') {
+                let key = key.trim();
+                let val = val.trim().trim_matches('"').trim_matches('\'').trim();
+
+                match key.to_uppercase().as_str() {
+                    "TARGET_IPS" | "TARGET_IP" => {
+                        for ip in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                            target_ips.push(ip.to_string());
+                        }
+                    }
+                    "TARGET_SUBNETS" | "TARGET_SUBNET" | "TARGET_CIDRS" | "TARGET_CIDR" => {
+                        for sub in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                            target_subnets.push(sub.to_string());
+                        }
+                    }
+                    "TARGET_INTERFACE" | "TARGET_IFACE" | "VIA_INTERFACE" | "VIA" => {
+                        target_iface = Some(val.to_string());
+                    }
+                    "WAN_INTERFACE" | "WAN_IFACE" | "WAN" => {
+                        wan_iface = Some(val.to_string());
+                    }
+                    "FALLBACK" => {
+                        fallback = val.to_string();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(wan) = wan_iface {
+            self.wan.interfaces = vec![wan];
+        }
+
+        let via = if let Some(iface) = target_iface {
+            vec![iface]
+        } else {
+            vec![]
+        };
+
+        for ip in target_ips {
+            let cidr = if ip.contains('/') {
+                ip.clone()
+            } else if ip.contains(':') {
+                format!("{}/128", ip)
+            } else {
+                format!("{}/32", ip)
+            };
+
+            let name = format!("env-{}", ip.replace(['.', ':', '/'], "-"));
+            if !self.targets.iter().any(|t| t.cidr == cidr) {
+                self.targets.push(TargetConfig {
+                    name,
+                    cidr,
+                    via: via.clone(),
+                    fallback: fallback.clone(),
+                });
+            }
+        }
+
+        for sub in target_subnets {
+            let name = format!("env-{}", sub.replace(['.', ':', '/'], "-"));
+            if !self.targets.iter().any(|t| t.cidr == sub) {
+                self.targets.push(TargetConfig {
+                    name,
+                    cidr: sub,
+                    via: via.clone(),
+                    fallback: fallback.clone(),
+                });
+            }
+        }
+    }
+
+    /// Reads and merges a .env file if it exists at the given path
+    pub fn merge_env_file<P: AsRef<std::path::Path>>(&mut self, path: P) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            self.apply_env_str(&content);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +273,25 @@ fallback = "drop"
         assert_eq!(cfg.networks[0].name, "malware-lab");
         assert_eq!(cfg.targets.len(), 1);
         assert_eq!(cfg.targets[0].fallback, "drop");
+    }
+
+    #[test]
+    fn test_env_parsing() {
+        let env_data = r#"
+# Manual target configuration in .env
+TARGET_IPS="10.0.0.100, 192.168.1.50"
+TARGET_SUBNETS=10.0.0.0/24
+TARGET_INTERFACE=wlan1
+WAN_INTERFACE=wlan0
+FALLBACK=drop
+"#;
+        let mut cfg = Config::default();
+        cfg.apply_env_str(env_data);
+
+        assert_eq!(cfg.wan.interfaces, vec!["wlan0"]);
+        assert_eq!(cfg.targets.len(), 3);
+        assert!(cfg.targets.iter().any(|t| t.cidr == "10.0.0.100/32" && t.via == vec!["wlan1"]));
+        assert!(cfg.targets.iter().any(|t| t.cidr == "192.168.1.50/32" && t.via == vec!["wlan1"]));
+        assert!(cfg.targets.iter().any(|t| t.cidr == "10.0.0.0/24" && t.via == vec!["wlan1"]));
     }
 }

@@ -86,9 +86,12 @@ pub fn run_doctor() -> DoctorReport {
     // 4. Check DNS backend
     let dns_backend = detect_best_dns_backend();
     checks.push((
-        "DNS Backend".into(),
-        dns_backend.is_available() && dns_backend.name() != "Disabled",
-        format!("Active backend: {}", dns_backend.name()),
+        "DNS OS Tampering".into(),
+        true,
+        format!(
+            "Status: {} (Pure L3 routing mode; no external DNS daemon dependency)",
+            dns_backend.name()
+        ),
     ));
 
     DoctorReport { checks }

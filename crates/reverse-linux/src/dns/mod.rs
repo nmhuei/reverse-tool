@@ -18,15 +18,6 @@ pub trait DnsBackend: Send + Sync {
 }
 
 pub fn detect_best_dns_backend() -> Box<dyn DnsBackend> {
-    let nm = networkmanager::NetworkManagerDnsBackend::new();
-    if nm.is_available() {
-        return Box::new(nm);
-    }
-
-    let resolved = resolved::ResolvedDnsBackend::new();
-    if resolved.is_available() {
-        return Box::new(resolved);
-    }
-
+    // Disabled OS DNS tampering: pure L3 IP/CIDR policy routing, no dependency on systemd-resolved/NetworkManager
     Box::new(disabled::DisabledDnsBackend::new())
 }

@@ -66,7 +66,7 @@ async fn async_main(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Load config
-    let config = if let Some(ref path) = cli.config {
+    let mut config = if let Some(ref path) = cli.config {
         let content = fs::read_to_string(path)?;
         Config::from_toml_str(&content)?
     } else if Path::new("/etc/reverse-tool/config.toml").exists() {
@@ -78,6 +78,13 @@ async fn async_main(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Config::default()
     };
+
+    // Automatically merge .env if present
+    if Path::new(".env").exists() {
+        config.merge_env_file(".env");
+    } else if Path::new("/etc/reverse-tool/.env").exists() {
+        config.merge_env_file("/etc/reverse-tool/.env");
+    }
 
     let daemon = ReversedDaemon::new(config, cli.socket);
     daemon.run().await?;

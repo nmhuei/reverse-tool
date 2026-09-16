@@ -345,28 +345,41 @@ pub async fn handle_target_list(client: &DaemonClient) {
 }
 
 pub fn load_config_or_default(config_path: Option<&Path>) -> Config {
-    if let Some(path) = config_path {
+    let mut config = if let Some(path) = config_path {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(cfg) = Config::from_toml_str(&content) {
-                return cfg;
+                cfg
+            } else {
+                Config::default()
+            }
+        } else {
+            Config::default()
+        }
+    } else {
+        let default_paths = [
+            Path::new("/etc/reverse-tool/config.toml"),
+            Path::new("config.toml"),
+            Path::new("config/example.toml"),
+        ];
+
+        let mut loaded = None;
+        for p in &default_paths {
+            if let Ok(content) = fs::read_to_string(p) {
+                if let Ok(cfg) = Config::from_toml_str(&content) {
+                    loaded = Some(cfg);
+                    break;
+                }
             }
         }
+        loaded.unwrap_or_default()
+    };
+
+    // Automatically merge .env if present
+    if Path::new(".env").exists() {
+        config.merge_env_file(".env");
+    } else if Path::new("/etc/reverse-tool/.env").exists() {
+        config.merge_env_file("/etc/reverse-tool/.env");
     }
 
-    // Default search locations
-    let default_paths = [
-        Path::new("/etc/reverse-tool/config.toml"),
-        Path::new("config.toml"),
-        Path::new("config/example.toml"),
-    ];
-
-    for p in &default_paths {
-        if let Ok(content) = fs::read_to_string(p) {
-            if let Ok(cfg) = Config::from_toml_str(&content) {
-                return cfg;
-            }
-        }
-    }
-
-    Config::default()
+    config
 }
