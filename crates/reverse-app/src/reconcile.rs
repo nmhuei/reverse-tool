@@ -116,7 +116,22 @@ impl Reconciler {
             });
         }
 
-        // 5. Commit state
+        // 5. Apply strict egress firewall whitelist on each target interface
+        // Enforces: ONLY configured target IPs are allowed out through LAN; everything else is DROPPED.
+        let mut iface_targets: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for r in &desired.routes {
+            iface_targets
+                .entry(r.output_interface.clone())
+                .or_default()
+                .push(r.destination.to_string());
+        }
+
+        for (iface, targets) in iface_targets {
+            let _ = reverse_linux::FirewallController::apply_egress_whitelist(&iface, &targets);
+        }
+
+        // 6. Commit state
         runtime_state.routes_owned = desired.routes.clone();
         runtime_state.rules_owned = desired.rules.clone();
         runtime_state.generation += 1;
@@ -164,6 +179,9 @@ impl Reconciler {
         let _ = self
             .netlink
             .remove_rpdb_rule(state.rule_priority, state.allocated_table);
+
+        // Clean up strict egress firewall whitelist chains
+        let _ = reverse_linux::FirewallController::cleanup_all();
 
         // Clear state file
         self.state_manager.clear()?;
