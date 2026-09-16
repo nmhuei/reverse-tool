@@ -67,6 +67,9 @@ enum Commands {
         sub: TargetSubcommands,
     },
 
+    /// Stop running reversed background daemon (shortcut for `daemon stop`)
+    Stop,
+
     /// Manage reversed daemon
     Daemon {
         #[command(subcommand)]
@@ -131,6 +134,9 @@ async fn main() {
         Commands::Doctor => handle_doctor().await,
         Commands::Autoconfig { save, apply } => {
             handle_autoconfig(&client, save, apply, cli.config.as_deref()).await;
+        }
+        Commands::Stop => {
+            reverse_app::commands::daemon::handle_daemon_stop(&client).await;
         }
         Commands::Target { sub } => match sub {
             TargetSubcommands::Add {

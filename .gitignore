@@ -3,3 +3,4 @@
 *.sock
 *.pid
 .DS_Store
+.env

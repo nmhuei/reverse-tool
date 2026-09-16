@@ -20,6 +20,7 @@ if [ ! -f "$BIN" ]; then
 fi
 
 echo -e "\x1b[1;32m[+] Khoi dong reversed daemon thanh cong!\x1b[0m"
-echo -e "\x1b[1;36m[i] Chinh sach tu .env da duoc kich hoat ngay lap tuc.\x1b[0m"
-echo -e "\x1b[1;33m[!] Nhan Ctrl+C bat cu luc nao de tat va tu dong khoi phuc 100% mang ve ban dau.\x1b[0m\n"
+echo -e "\x1b[1;36m[i] Chinh sach tu .env da duoc kich hoat ngam ngay lap tuc.\x1b[0m"
+echo -e "\x1b[1;33m[!] Daemon da duoc tach chay ngam. Ban co the dong cua so terminal nay thoai mai.\x1b[0m"
+echo -e "\x1b[1;35m[i] Khi nao muon tat: go './stop.sh' hoac 'sudo reverse-tool stop'\x1b[0m\n"
 exec "$BIN" "$@"

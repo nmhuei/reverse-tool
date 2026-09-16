@@ -17,19 +17,24 @@ struct Cli {
     #[arg(short, long)]
     socket: Option<PathBuf>,
 
-    /// Detach and run as background daemon (survives terminal close)
+    /// Run in foreground instead of detached background daemon mode
     #[arg(short, long)]
-    daemon: bool,
+    foreground: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    if cli.daemon {
+    if !cli.foreground {
         let log_path = reverse_app::rpc::default_log_path();
         if let Some(parent) = log_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
+
+        println!("\x1b[1;32m[+] reversed daemon started in background!\x1b[0m");
+        println!("    Logs: \x1b[1m{:?}\x1b[0m", log_path);
+        println!("    \x1b[1;36m-> Ban co the dong terminal nay thoai mai; daemon van tiep tuc chay ngam.\x1b[0m");
+        println!("    \x1b[1;33m-> Khi muon dung: sudo reverse-tool stop\x1b[0m\n");
 
         if let Ok(file) = fs::OpenOptions::new()
             .create(true)
