@@ -238,12 +238,20 @@ pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Opt
     }
 
     let routes = engine.generate_desired_routes(&health_map, &health_sm);
-    let desired = RoutePlanner::generate_desired_state(
+    let mut desired = RoutePlanner::generate_desired_state(
         cfg.defaults.table_id,
         cfg.defaults.rule_priority,
         routes,
         vec![],
     );
+
+    for target in &cfg.targets {
+        for iface in &target.via {
+            desired
+                .firewall_whitelist
+                .push((iface.clone(), target.cidr.to_string(), target.port));
+        }
+    }
 
     let reconciler = crate::reconcile::Reconciler::new(StateManager::new());
     match reconciler.reconcile(&desired, dry_run) {
@@ -309,9 +317,13 @@ pub async fn handle_target_add(
     via: Vec<String>,
     fallback: &str,
 ) {
+    let (clean_cidr, port) =
+        reverse_core::parse_target_spec(cidr).unwrap_or_else(|| (cidr.to_string(), None));
+
     let target = TargetConfig {
         name: name.to_string(),
-        cidr: cidr.to_string(),
+        cidr: clean_cidr,
+        port,
         via,
         fallback: fallback.to_string(),
     };

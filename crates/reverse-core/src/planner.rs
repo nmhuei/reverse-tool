@@ -72,6 +72,7 @@ impl RoutePlanner {
             routes,
             rules: vec![rule],
             dns_split_domains: split_dns,
+            firewall_whitelist: vec![],
         }
     }
 }
@@ -95,6 +96,7 @@ mod tests {
             routes: vec![default_route],
             rules: vec![],
             dns_split_domains: vec![],
+            firewall_whitelist: vec![],
         };
 
         let res = RoutePlanner::validate_desired_state(&desired);
@@ -133,6 +135,7 @@ mod tests {
                 table: 52000,
             }],
             dns_split_domains: vec![],
+            firewall_whitelist: vec![],
         };
 
         let diff = RoutePlanner::plan_diff(&actual, &desired).unwrap();

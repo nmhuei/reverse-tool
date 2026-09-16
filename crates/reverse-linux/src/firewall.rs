@@ -9,7 +9,7 @@ impl FirewallController {
     /// All other packets attempting to exit via this interface are DROPPED.
     pub fn apply_egress_whitelist(
         interface: &str,
-        allowed_targets: &[String],
+        allowed_targets: &[(String, Option<u16>)],
     ) -> Result<(), LinuxError> {
         let chain_name = format!("RT_EGRESS_{}", interface.replace(['.', '-'], "_"));
 
@@ -47,10 +47,44 @@ impl FirewallController {
             ])
             .output();
 
-        // 4. Whitelist explicitly allowed target IPs/CIDRs
-        for target in allowed_targets {
+        // 4. Whitelist explicitly allowed target IPs/CIDRs and optional ports
+        for (target, port) in allowed_targets {
             let trimmed = target.trim();
-            if !trimmed.is_empty() {
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(p) = port {
+                let p_str = p.to_string();
+                let _ = Command::new("iptables")
+                    .args([
+                        "-A",
+                        &chain_name,
+                        "-d",
+                        trimmed,
+                        "-p",
+                        "tcp",
+                        "--dport",
+                        &p_str,
+                        "-j",
+                        "ACCEPT",
+                    ])
+                    .output();
+                let _ = Command::new("iptables")
+                    .args([
+                        "-A",
+                        &chain_name,
+                        "-d",
+                        trimmed,
+                        "-p",
+                        "udp",
+                        "--dport",
+                        &p_str,
+                        "-j",
+                        "ACCEPT",
+                    ])
+                    .output();
+            } else {
                 let _ = Command::new("iptables")
                     .args(["-A", &chain_name, "-d", trimmed, "-j", "ACCEPT"])
                     .output();

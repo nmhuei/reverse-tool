@@ -32,8 +32,14 @@ impl ReversedDaemon {
         let socket_path = custom_socket.unwrap_or_else(default_socket_path);
         let netlink = NetlinkController::new();
 
-        let explicit_wan = config.wan.interfaces.first().filter(|w| *w != "auto").cloned();
-        let default_wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
+        let explicit_wan = config
+            .wan
+            .interfaces
+            .first()
+            .filter(|w| *w != "auto")
+            .cloned();
+        let default_wan =
+            explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
         let daemon_state = DaemonState {
             config,
@@ -54,6 +60,12 @@ impl ReversedDaemon {
             tracing::warn!("Starting daemon with warnings: {}", e);
         }
 
+        // 1. Reset any stale policy routes or firewall rules from prior runs or crashes
+        let startup_reconciler = Reconciler::new(StateManager::new());
+        if let Err(e) = startup_reconciler.reset() {
+            tracing::warn!("Startup reset notice: {}", e);
+        }
+
         // Clean existing socket
         if self.socket_path.exists() {
             let _ = fs::remove_file(&self.socket_path);
@@ -71,6 +83,9 @@ impl ReversedDaemon {
             let _ = fs::create_dir_all(parent);
         }
         let _ = fs::write(&pid_path, std::process::id().to_string());
+
+        // Channel to signal shutdown from RPC (e.g. DaemonRequest::Shutdown)
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         // Spawn background health probe loop
         let state_probe = Arc::clone(&self.state);
@@ -117,30 +132,81 @@ impl ReversedDaemon {
             }
         });
 
-        // Accept loop
+        #[cfg(unix)]
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+        // Accept loop with signal listening
         loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let state = Arc::clone(&self.state);
-                    let state_mgr = StateManager::new();
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::handle_client(stream, state, state_mgr).await {
-                            tracing::error!("Client handling error: {}", e);
+            tokio::select! {
+                accept_res = listener.accept() => {
+                    match accept_res {
+                        Ok((stream, _)) => {
+                            let state = Arc::clone(&self.state);
+                            let state_mgr = StateManager::new();
+                            let s_tx = shutdown_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = Self::handle_client(stream, state, state_mgr, s_tx).await {
+                                    tracing::error!("Client handling error: {}", e);
+                                }
+                            });
                         }
-                    });
+                        Err(e) => {
+                            tracing::error!("Listener accept error: {}", e);
+                            sleep(Duration::from_millis(50)).await;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Listener accept error: {}", e);
-                    sleep(Duration::from_millis(50)).await;
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                    break;
+                }
+                _ = async {
+                    #[cfg(unix)]
+                    {
+                        sigterm.recv().await
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        std::future::pending::<Option<()>>().await
+                    }
+                } => {
+                    tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+                    break;
+                }
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Received RPC Shutdown request, initiating graceful shutdown...");
+                    break;
                 }
             }
         }
+
+        // Ephemeral lifecycle guarantee: Clean up all custom routing tables, rules, and iptables chains!
+        tracing::info!(
+            "Restoring system routing and firewall before exit (ephemeral lifecycle)..."
+        );
+        let cleanup_reconciler = Reconciler::new(StateManager::new());
+        if let Err(e) = cleanup_reconciler.reset() {
+            tracing::error!("Error cleaning up during shutdown: {}", e);
+        }
+
+        if self.socket_path.exists() {
+            let _ = fs::remove_file(&self.socket_path);
+        }
+        let pid_path = crate::rpc::default_pid_path();
+        if pid_path.exists() {
+            let _ = fs::remove_file(&pid_path);
+        }
+
+        tracing::info!("reversed daemon successfully stopped and cleaned up.");
+        Ok(())
     }
 
     async fn handle_client(
         stream: UnixStream,
         state: Arc<Mutex<DaemonState>>,
         state_mgr: StateManager,
+        shutdown_tx: tokio::sync::mpsc::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
@@ -259,12 +325,22 @@ impl ReversedDaemon {
                         }
                     }
 
-                    let desired = RoutePlanner::generate_desired_state(
+                    let mut desired = RoutePlanner::generate_desired_state(
                         s.config.defaults.table_id,
                         s.config.defaults.rule_priority,
                         desired_routes,
                         split_dns.clone(),
                     );
+
+                    for target in &s.config.targets {
+                        for iface in &target.via {
+                            desired.firewall_whitelist.push((
+                                iface.clone(),
+                                target.cidr.to_string(),
+                                target.port,
+                            ));
+                        }
+                    }
 
                     let reconciler = Reconciler::new(StateManager::new());
                     let report = reconciler.reconcile(&desired, dry_run);
@@ -315,14 +391,11 @@ impl ReversedDaemon {
                 }
                 DaemonRequest::Reload => DaemonResponse::Ok("Daemon reloaded".into()),
                 DaemonRequest::Shutdown => {
-                    let resp = DaemonResponse::Ok("Daemon stopping".into());
+                    let resp = DaemonResponse::Ok("Daemon stopping and resetting state".into());
                     let resp_str = serde_json::to_string(&resp)? + "\n";
-                    writer.write_all(resp_str.as_bytes()).await?;
+                    let _ = writer.write_all(resp_str.as_bytes()).await;
                     let _ = writer.flush().await;
-                    tokio::spawn(async {
-                        sleep(Duration::from_millis(100)).await;
-                        std::process::exit(0);
-                    });
+                    let _ = shutdown_tx.send(()).await;
                     return Ok(());
                 }
             };

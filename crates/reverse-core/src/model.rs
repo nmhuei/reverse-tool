@@ -174,6 +174,8 @@ pub struct DesiredState {
     pub routes: Vec<Route>,
     pub rules: Vec<RpdbRule>,
     pub dns_split_domains: Vec<(String, IpAddr)>, // (domain, dns_server)
+    #[serde(default)]
+    pub firewall_whitelist: Vec<(String, String, Option<u16>)>, // (interface, cidr, optional_port)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

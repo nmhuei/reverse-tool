@@ -128,14 +128,24 @@ impl Reconciler {
         }
 
         // 5. Apply strict egress firewall whitelist on each target interface
-        // Enforces: ONLY configured target IPs are allowed out through LAN; everything else is DROPPED.
-        let mut iface_targets: std::collections::HashMap<String, Vec<String>> =
+        // Enforces: ONLY configured target IPs and ports are allowed out through LAN; everything else is DROPPED.
+        let mut iface_targets: std::collections::HashMap<String, Vec<(String, Option<u16>)>> =
             std::collections::HashMap::new();
-        for r in &desired.routes {
-            iface_targets
-                .entry(r.output_interface.clone())
-                .or_default()
-                .push(r.destination.to_string());
+
+        if !desired.firewall_whitelist.is_empty() {
+            for (iface, cidr, port) in &desired.firewall_whitelist {
+                iface_targets
+                    .entry(iface.clone())
+                    .or_default()
+                    .push((cidr.clone(), *port));
+            }
+        } else {
+            for r in &desired.routes {
+                iface_targets
+                    .entry(r.output_interface.clone())
+                    .or_default()
+                    .push((r.destination.to_string(), None));
+            }
         }
 
         for (iface, targets) in iface_targets {
@@ -145,6 +155,10 @@ impl Reconciler {
         // 6. Commit state
         runtime_state.routes_owned = desired.routes.clone();
         runtime_state.rules_owned = desired.rules.clone();
+        if let Some(first_rule) = desired.rules.first() {
+            runtime_state.allocated_table = first_rule.table;
+            runtime_state.rule_priority = first_rule.priority;
+        }
         runtime_state.generation += 1;
         runtime_state.last_reconcile_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

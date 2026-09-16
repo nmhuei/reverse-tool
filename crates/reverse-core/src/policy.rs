@@ -313,12 +313,14 @@ mod tests {
         cfg.targets.push(crate::config::TargetConfig {
             name: "victim".into(),
             cidr: "192.168.56.0/24".into(),
+            port: None,
             via: vec!["wlan1".into(), "eth1".into()],
             fallback: "drop".into(),
         });
         cfg.targets.push(crate::config::TargetConfig {
             name: "specific-host".into(),
             cidr: "192.168.56.20".into(),
+            port: None,
             via: vec!["eth1".into()],
             fallback: "drop".into(),
         });

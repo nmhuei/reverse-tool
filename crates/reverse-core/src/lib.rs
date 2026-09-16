@@ -8,7 +8,7 @@ pub mod planner;
 pub mod policy;
 
 pub use classifier::{InterfaceClassifier, TargetClassifier};
-pub use config::{Config, NetworkConfig, OperatingMode, TargetConfig};
+pub use config::{parse_target_spec, Config, NetworkConfig, OperatingMode, TargetConfig};
 pub use detector::{DetectedLanProfile, LanDetector};
 pub use error::CoreError;
 pub use health::{HealthConfig, HealthStateMachine};

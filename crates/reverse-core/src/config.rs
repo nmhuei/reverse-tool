@@ -7,8 +7,8 @@ use std::net::IpAddr;
 #[serde(rename_all = "lowercase")]
 pub enum OperatingMode {
     Auto,
-    Manual,
     #[default]
+    Manual,
     Hybrid,
 }
 
@@ -17,7 +17,7 @@ pub struct DefaultsConfig {
     #[serde(default = "default_unknown")]
     pub unknown: String, // "wan"
     #[serde(default = "default_lab_failure")]
-    pub lab_failure: String, // "drop"
+    pub lab_failure: String, // "wan"
     #[serde(default = "default_true")]
     pub auto_failback: bool,
     #[serde(default = "default_table_id")]
@@ -30,7 +30,7 @@ fn default_unknown() -> String {
     "wan".to_string()
 }
 fn default_lab_failure() -> String {
-    "drop".to_string()
+    "wan".to_string()
 }
 fn default_true() -> bool {
     true
@@ -84,7 +84,9 @@ fn default_lan_role() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetConfig {
     pub name: String,
-    pub cidr: String, // e.g. "192.168.56.0/24" or "victim.lab"
+    pub cidr: String, // e.g. "192.168.56.0/24" or "10.0.0.10/32"
+    #[serde(default)]
+    pub port: Option<u16>, // e.g. Some(999) for 10.0.0.10:999 or URL port
     #[serde(default)]
     pub via: Vec<String>,
     #[serde(default = "default_lab_failure")]
@@ -116,7 +118,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            mode: OperatingMode::Hybrid,
+            mode: OperatingMode::Manual,
             defaults: DefaultsConfig::default(),
             wan: WanConfig {
                 interfaces: vec!["auto".to_string()],
@@ -137,13 +139,14 @@ impl Config {
         toml::to_string_pretty(self).map_err(|e| CoreError::Config(e.to_string()))
     }
 
-    /// Merges targets and interface mappings from a .env file content
+    /// Merges targets and interface mappings from a .env file content.
+    /// Supports host:port (e.g. 10.0.0.10:999), URLs (e.g. http://10.0.0.10:8080/api),
+    /// single IPs (10.0.0.10), and CIDR subnets (10.0.0.0/24).
     pub fn apply_env_str(&mut self, env_content: &str) {
-        let mut target_ips = Vec::new();
-        let mut target_subnets = Vec::new();
+        let mut target_specs: Vec<(String, Option<u16>)> = Vec::new();
         let mut target_iface: Option<String> = None;
         let mut wan_iface: Option<String> = None;
-        let mut fallback = "drop".to_string();
+        let mut fallback = "wan".to_string();
 
         for line in env_content.lines() {
             let line = line.trim();
@@ -156,14 +159,19 @@ impl Config {
                 let val = val.trim().trim_matches('"').trim_matches('\'').trim();
 
                 match key.to_uppercase().as_str() {
-                    "TARGET_IPS" | "TARGET_IP" => {
-                        for ip in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                            target_ips.push(ip.to_string());
+                    "TARGETS" | "TARGET_IPS" | "TARGET_IP" | "TARGET_SERVER" | "TARGET_SERVERS"
+                    | "SERVERS" | "SERVER" => {
+                        for item in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                            if let Some(spec) = parse_target_spec(item) {
+                                target_specs.push(spec);
+                            }
                         }
                     }
                     "TARGET_SUBNETS" | "TARGET_SUBNET" | "TARGET_CIDRS" | "TARGET_CIDR" => {
                         for sub in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                            target_subnets.push(sub.to_string());
+                            if let Some(spec) = parse_target_spec(sub) {
+                                target_specs.push(spec);
+                            }
                         }
                     }
                     "TARGET_INTERFACE" | "TARGET_IFACE" | "VIA_INTERFACE" | "VIA" => {
@@ -190,32 +198,18 @@ impl Config {
             vec![]
         };
 
-        for ip in target_ips {
-            let cidr = if ip.contains('/') {
-                ip.clone()
-            } else if ip.contains(':') {
-                format!("{}/128", ip)
-            } else {
-                format!("{}/32", ip)
-            };
-
-            let name = format!("env-{}", ip.replace(['.', ':', '/'], "-"));
-            if !self.targets.iter().any(|t| t.cidr == cidr) {
+        for (cidr, port) in target_specs {
+            let port_suffix = port.map(|p| format!("-port-{}", p)).unwrap_or_default();
+            let name = format!("env-{}{}", cidr.replace(['.', ':', '/'], "-"), port_suffix);
+            if !self
+                .targets
+                .iter()
+                .any(|t| t.cidr == cidr && t.port == port)
+            {
                 self.targets.push(TargetConfig {
                     name,
                     cidr,
-                    via: via.clone(),
-                    fallback: fallback.clone(),
-                });
-            }
-        }
-
-        for sub in target_subnets {
-            let name = format!("env-{}", sub.replace(['.', ':', '/'], "-"));
-            if !self.targets.iter().any(|t| t.cidr == sub) {
-                self.targets.push(TargetConfig {
-                    name,
-                    cidr: sub,
+                    port,
                     via: via.clone(),
                     fallback: fallback.clone(),
                 });
@@ -229,6 +223,79 @@ impl Config {
             self.apply_env_str(&content);
         }
     }
+}
+
+/// Parses a target string which can be a URL (http://... or https://...),
+/// a host:port pair (10.0.0.10:999), a single IP (10.0.0.10), or a CIDR subnet (10.0.0.0/24).
+/// Returns (canonical_cidr_or_ip, optional_port).
+pub fn parse_target_spec(raw: &str) -> Option<(String, Option<u16>)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // 1. Check if it's a URL with explicit HTTP(S) scheme
+    let (without_scheme, default_port, is_url_scheme) =
+        if let Some(stripped) = raw.strip_prefix("http://") {
+            (stripped, Some(80), true)
+        } else if let Some(stripped) = raw.strip_prefix("https://") {
+            (stripped, Some(443), true)
+        } else {
+            (raw, None, false)
+        };
+
+    // If it is not a URL scheme and is a valid CIDR network (e.g. 10.0.0.0/24), return it directly
+    if !is_url_scheme && without_scheme.contains('/') {
+        if let Ok(net) = without_scheme.parse::<ipnet::IpNet>() {
+            return Some((net.to_string(), None));
+        }
+    }
+
+    // Strip any URL path/query/fragment: e.g. "10.0.0.10:999/api" -> "10.0.0.10:999"
+    let host_port_part = without_scheme
+        .split(&['/', '?', '#'][..])
+        .next()
+        .unwrap_or(without_scheme)
+        .trim();
+
+    // Check if IPv6 with brackets: [::1]:999 or [::1]
+    if host_port_part.starts_with('[') {
+        if let Some(close_bracket) = host_port_part.find(']') {
+            let ip_str = &host_port_part[1..close_bracket];
+            let port_part = &host_port_part[close_bracket + 1..];
+            let port = if let Some(colon) = port_part.strip_prefix(':') {
+                colon.parse::<u16>().ok()
+            } else {
+                default_port
+            };
+            return Some((format!("{}/128", ip_str), port));
+        }
+    }
+
+    // Check if host:port (e.g. 10.0.0.10:999)
+    if let Some((host, port_str)) = host_port_part.rsplit_once(':') {
+        if !host.contains(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                let cidr = if host.contains('/') {
+                    host.to_string()
+                } else {
+                    format!("{}/32", host)
+                };
+                return Some((cidr, Some(port)));
+            }
+        }
+    }
+
+    // Single IP or CIDR (no explicit port)
+    let cidr = if host_port_part.contains('/') {
+        host_port_part.to_string()
+    } else if host_port_part.contains(':') {
+        format!("{}/128", host_port_part)
+    } else {
+        format!("{}/32", host_port_part)
+    };
+
+    Some((cidr, default_port))
 }
 
 #[cfg(test)]
@@ -290,8 +357,69 @@ FALLBACK=drop
 
         assert_eq!(cfg.wan.interfaces, vec!["wlan0"]);
         assert_eq!(cfg.targets.len(), 3);
-        assert!(cfg.targets.iter().any(|t| t.cidr == "10.0.0.100/32" && t.via == vec!["wlan1"]));
-        assert!(cfg.targets.iter().any(|t| t.cidr == "192.168.1.50/32" && t.via == vec!["wlan1"]));
-        assert!(cfg.targets.iter().any(|t| t.cidr == "10.0.0.0/24" && t.via == vec!["wlan1"]));
+        assert!(cfg
+            .targets
+            .iter()
+            .any(|t| t.cidr == "10.0.0.100/32" && t.via == vec!["wlan1"]));
+        assert!(cfg
+            .targets
+            .iter()
+            .any(|t| t.cidr == "192.168.1.50/32" && t.via == vec!["wlan1"]));
+        assert!(cfg
+            .targets
+            .iter()
+            .any(|t| t.cidr == "10.0.0.0/24" && t.via == vec!["wlan1"]));
+    }
+
+    #[test]
+    fn test_parse_target_spec_formats() {
+        // host:port
+        let (cidr, port) = parse_target_spec("10.0.0.10:999").unwrap();
+        assert_eq!(cidr, "10.0.0.10/32");
+        assert_eq!(port, Some(999));
+
+        // HTTP URL with custom port
+        let (cidr, port) = parse_target_spec("http://10.0.0.20:8080/api/v1?token=123").unwrap();
+        assert_eq!(cidr, "10.0.0.20/32");
+        assert_eq!(port, Some(8080));
+
+        // Default HTTP port
+        let (cidr, port) = parse_target_spec("http://10.0.0.25/login").unwrap();
+        assert_eq!(cidr, "10.0.0.25/32");
+        assert_eq!(port, Some(80));
+
+        // Default HTTPS port
+        let (cidr, port) = parse_target_spec("https://10.0.0.30/admin").unwrap();
+        assert_eq!(cidr, "10.0.0.30/32");
+        assert_eq!(port, Some(443));
+
+        // Plain IP (no port)
+        let (cidr, port) = parse_target_spec("192.168.56.5").unwrap();
+        assert_eq!(cidr, "192.168.56.5/32");
+        assert_eq!(port, None);
+
+        // CIDR subnet
+        let (cidr, port) = parse_target_spec("192.168.56.0/24").unwrap();
+        assert_eq!(cidr, "192.168.56.0/24");
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn test_target_server_env_host_port() {
+        let env_data = r#"
+TARGET_SERVER=10.0.0.10:999
+TARGET_INTERFACE=wlan1
+WAN_INTERFACE=wlan0
+"#;
+        let mut cfg = Config::default();
+        cfg.apply_env_str(env_data);
+
+        assert_eq!(cfg.mode, OperatingMode::Manual);
+        assert_eq!(cfg.wan.interfaces, vec!["wlan0"]);
+        assert_eq!(cfg.targets.len(), 1);
+        let t = &cfg.targets[0];
+        assert_eq!(t.cidr, "10.0.0.10/32");
+        assert_eq!(t.port, Some(999));
+        assert_eq!(t.via, vec!["wlan1"]);
     }
 }

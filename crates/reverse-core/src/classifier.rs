@@ -75,6 +75,11 @@ impl TargetClassifier {
         // Check if CIDR
         if trimmed.contains('/') {
             if let Ok(net) = IpNet::from_str(trimmed) {
+                if (net.addr().is_ipv4() && net.prefix_len() == 32)
+                    || (net.addr().is_ipv6() && net.prefix_len() == 128)
+                {
+                    return Ok(TargetMatcher::HostIp(net.addr()));
+                }
                 return Ok(TargetMatcher::Cidr(net));
             } else {
                 return Err(CoreError::InvalidTarget(format!(

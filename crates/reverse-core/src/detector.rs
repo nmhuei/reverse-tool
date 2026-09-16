@@ -56,6 +56,7 @@ impl LanDetector {
                 targets.push(TargetConfig {
                     name: format!("{}-subnet", iface.name),
                     cidr: cidr_str,
+                    port: None,
                     via: vec![iface.name.clone()],
                     fallback: "drop".into(),
                 });
@@ -72,6 +73,7 @@ impl LanDetector {
                             targets.push(TargetConfig {
                                 name: format!("{}-gateway", iface.name),
                                 cidr: format!("{}/{}", gw, prefix),
+                                port: None,
                                 via: vec![iface.name.clone()],
                                 fallback: "drop".into(),
                             });
@@ -81,6 +83,7 @@ impl LanDetector {
                         targets.push(TargetConfig {
                             name: format!("{}-gateway", iface.name),
                             cidr: format!("{}/{}", gw, prefix),
+                            port: None,
                             via: vec![iface.name.clone()],
                             fallback: "drop".into(),
                         });
@@ -110,6 +113,7 @@ impl LanDetector {
                     targets.push(TargetConfig {
                         name: format!("{}-host-{}", iface.name, neigh_ip),
                         cidr: format!("{}/{}", neigh_ip, prefix),
+                        port: None,
                         via: vec![iface.name.clone()],
                         fallback: "drop".into(),
                     });
