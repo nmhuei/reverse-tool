@@ -54,13 +54,24 @@ impl Reconciler {
             });
         }
 
-        // Apply changes:
-        // 1. Ensure RPDB rule exists
+        // 1. Remove obsolete RPDB rules
+        for rule in &diff.rules_to_remove {
+            let _ = self.netlink.remove_rpdb_rule(rule.priority, rule.table);
+        }
+
+        // 2. Ensure desired RPDB rules exist
         for rule in &diff.rules_to_add {
             self.netlink.ensure_rpdb_rule(rule.priority, rule.table)?;
         }
 
-        // 2. Remove obsolete routes from isolated table
+        // 3. Purge rogue default routes on target LAN interfaces in table main
+        for route in &desired.routes {
+            let _ = self
+                .netlink
+                .remove_default_routes_on_interface(&route.output_interface);
+        }
+
+        // 4. Remove obsolete routes from isolated table
         for route in &diff.routes_to_remove {
             self.netlink.delete_route(route)?;
         }

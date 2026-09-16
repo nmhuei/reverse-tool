@@ -37,12 +37,15 @@ pub async fn handle_scan(client: &DaemonClient) {
     }
 
     // Direct local scan
+    let cfg = load_config_or_default(None);
     let netlink = NetlinkController::new();
     let mut ifaces = netlink.get_interfaces().unwrap_or_default();
-    let default_wan = netlink.get_default_wan_interface().unwrap_or(None);
+    let explicit_wan = cfg.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+    let default_wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
-        iface.role = InterfaceClassifier::classify(iface, default_wan.as_deref(), &[]);
+        iface.role =
+            InterfaceClassifier::classify(iface, default_wan.as_deref(), &cfg.wan.interfaces);
     }
 
     print_interfaces(&ifaces, default_wan.as_deref());
@@ -134,10 +137,11 @@ pub async fn handle_explain(client: &DaemonClient, target: &str, config_path: Op
     let cfg = load_config_or_default(config_path);
     let netlink = NetlinkController::new();
     let mut ifaces = netlink.get_interfaces().unwrap_or_default();
-    let wan = netlink.get_default_wan_interface().unwrap_or(None);
+    let explicit_wan = cfg.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+    let wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
-        iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &[]);
+        iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &cfg.wan.interfaces);
     }
 
     let engine = PolicyEngine::from_config(&cfg, &ifaces, wan);
@@ -214,10 +218,11 @@ pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Opt
     println!("\x1b[1;33m[!] Daemon is offline; executing direct reconciliation\x1b[0m");
     let netlink = NetlinkController::new();
     let mut ifaces = netlink.get_interfaces().unwrap_or_default();
-    let wan = netlink.get_default_wan_interface().unwrap_or(None);
+    let explicit_wan = cfg.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+    let wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
-        iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &[]);
+        iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &cfg.wan.interfaces);
     }
 
     let engine = PolicyEngine::from_config(&cfg, &ifaces, wan);

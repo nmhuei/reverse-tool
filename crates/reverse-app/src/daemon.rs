@@ -32,7 +32,8 @@ impl ReversedDaemon {
         let socket_path = custom_socket.unwrap_or_else(default_socket_path);
         let netlink = NetlinkController::new();
 
-        let default_wan = netlink.get_default_wan_interface().unwrap_or(None);
+        let explicit_wan = config.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+        let default_wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
         let daemon_state = DaemonState {
             config,
@@ -216,8 +217,11 @@ impl ReversedDaemon {
                     let netlink = NetlinkController::new();
                     let mut ifaces = netlink.get_interfaces().unwrap_or_default();
                     for iface in &mut ifaces {
-                        iface.role =
-                            InterfaceClassifier::classify(iface, s.default_wan.as_deref(), &[]);
+                        iface.role = InterfaceClassifier::classify(
+                            iface,
+                            s.default_wan.as_deref(),
+                            &s.config.wan.interfaces,
+                        );
                     }
 
                     // Automatically detect LAN subnets & servers if in auto/hybrid mode

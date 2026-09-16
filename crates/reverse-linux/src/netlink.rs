@@ -132,6 +132,32 @@ impl NetlinkController {
         Ok(None)
     }
 
+    /// Removes rogue default routes on a target LAN interface from table main,
+    /// ensuring LAN can never hijack general Internet (WLAN) traffic.
+    pub fn remove_default_routes_on_interface(&self, iface_name: &str) -> Result<(), LinuxError> {
+        let output = Command::new("ip")
+            .args(["route", "show", "default", "dev", iface_name])
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if !line.trim().is_empty() {
+                    let _ = Command::new("ip")
+                        .args(["route", "del", "default", "dev", iface_name])
+                        .output();
+                    tracing::info!(
+                        "Removed rogue default route on LAN interface {}: {}",
+                        iface_name,
+                        line.trim()
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Allocate an unused routing table within the reserved range 52000-52099
     pub fn allocate_table(&self, start: u32, end: u32) -> Result<u32, LinuxError> {
         let mut used_tables = HashSet::new();
