@@ -1,3 +1,4 @@
+use ipnet::IpNet;
 use reverse_core::{ActualState, Route, RpdbRule};
 use reverse_linux::LinuxError;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,10 @@ pub struct RuntimeState {
     pub rules_owned: Vec<RpdbRule>,
     #[serde(default)]
     pub firewall_whitelist: Vec<(String, String, Option<u16>)>,
+    #[serde(default)]
+    pub firewall_blacklist: Vec<IpNet>,
+    #[serde(default)]
+    pub firewall_interfaces: Vec<String>,
     pub generation: u64,
     pub last_reconcile_epoch: u64,
 }
@@ -24,6 +29,8 @@ impl Default for RuntimeState {
             routes_owned: vec![],
             rules_owned: vec![],
             firewall_whitelist: vec![],
+            firewall_blacklist: vec![],
+            firewall_interfaces: vec![],
             generation: 1,
             last_reconcile_epoch: 0,
         }
@@ -43,7 +50,9 @@ impl Default for StateManager {
 impl StateManager {
     pub fn new() -> Self {
         // Preferred: /run/reverse-tool/state.json, fallback: /tmp/reverse-tool/state.json
-        let path = if Path::new("/run").exists() && unsafe { libc::geteuid() == 0 } {
+        let path = if Path::new("/run/reverse-tool/state.json").exists()
+            || (Path::new("/run").exists() && unsafe { libc::geteuid() == 0 })
+        {
             PathBuf::from("/run/reverse-tool/state.json")
         } else {
             PathBuf::from("/tmp/reverse-tool/state.json")

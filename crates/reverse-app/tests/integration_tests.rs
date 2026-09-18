@@ -131,10 +131,14 @@ fn test_planner_safety_invariants() {
             gateway: None,
             table: 52000,
             metric: None,
+            route_type: reverse_core::RouteType::Unicast,
         }],
         rules: vec![],
         dns_split_domains: vec![],
         firewall_whitelist: vec![],
+        wan_interface: None,
+        lan_interfaces: vec![],
+        blacklist: vec![],
     };
 
     let res = RoutePlanner::validate_desired_state(&desired);
@@ -143,7 +147,7 @@ fn test_planner_safety_invariants() {
 }
 
 #[test]
-fn test_strict_env_host_port_routing_and_firewall() {
+fn test_env_host_routing_and_all_port_lan_firewall() {
     let env_content = r#"
 TARGET_SERVER=10.0.0.10:999
 TARGET_IPS="http://10.0.0.20:8080/api, 10.0.0.30"
@@ -229,8 +233,10 @@ FALLBACK=wan
     assert_eq!(d_fb.routing_table, 254);
 
     // 4. Fallback test: If LAN (wlan1) fails, traffic safely falls back to WAN (wlan0) as configured
-    let mut wlan1_down = PathHealth::default();
-    wlan1_down.state = reverse_core::HealthState::Down;
+    let wlan1_down = PathHealth {
+        state: reverse_core::HealthState::Down,
+        ..Default::default()
+    };
     health_map.insert("wlan1".into(), wlan1_down);
 
     let d_server_fallback = engine.decide("10.0.0.10", &health_map, &health_sm);
@@ -240,7 +246,9 @@ FALLBACK=wan
     );
     assert_eq!(d_server_fallback.routing_table, 254);
 
-    // 5. Restore health and test desired state & firewall whitelist generation
+    // 5. Restore health and test destination-only LAN firewall generation.
+    // A configured IP is authorized on every port, irrespective of how it was
+    // originally written (host:port or URL) in the environment file.
     let mut wlan1_up = PathHealth::default();
     health_sm.record_success(&mut wlan1_up, 200);
     health_map.insert("wlan1".into(), wlan1_up);
@@ -257,7 +265,7 @@ FALLBACK=wan
         for iface in &target.via {
             desired
                 .firewall_whitelist
-                .push((iface.clone(), target.cidr.to_string(), target.port));
+                .push((iface.clone(), target.cidr.to_string(), None));
         }
     }
 
@@ -266,17 +274,13 @@ FALLBACK=wan
     assert!(desired
         .firewall_whitelist
         .iter()
-        .any(|(iface, cidr, port)| iface == "wlan1"
-            && cidr == "10.0.0.10/32"
-            && *port == Some(999)));
+        .any(|(iface, cidr, port)| iface == "wlan1" && cidr == "10.0.0.10/32" && port.is_none()));
     assert!(desired
         .firewall_whitelist
         .iter()
-        .any(|(iface, cidr, port)| iface == "wlan1"
-            && cidr == "10.0.0.20/32"
-            && *port == Some(8080)));
+        .any(|(iface, cidr, port)| iface == "wlan1" && cidr == "10.0.0.20/32" && port.is_none()));
     assert!(desired
         .firewall_whitelist
         .iter()
-        .any(|(iface, cidr, port)| iface == "wlan1" && cidr == "10.0.0.30/32" && *port == None));
+        .any(|(iface, cidr, port)| iface == "wlan1" && cidr == "10.0.0.30/32" && port.is_none()));
 }

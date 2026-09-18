@@ -17,6 +17,10 @@ struct Cli {
     #[arg(short, long)]
     socket: Option<PathBuf>,
 
+    /// Detach and run as background daemon (default behavior)
+    #[arg(long)]
+    daemon: bool,
+
     /// Run in foreground instead of detached background daemon mode
     #[arg(short, long)]
     foreground: bool,
@@ -77,8 +81,8 @@ async fn async_main(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     } else if Path::new("/etc/reverse-tool/config.toml").exists() {
         let content = fs::read_to_string("/etc/reverse-tool/config.toml")?;
         Config::from_toml_str(&content)?
-    } else if Path::new("config/example.toml").exists() {
-        let content = fs::read_to_string("config/example.toml")?;
+    } else if Path::new("config.toml").exists() {
+        let content = fs::read_to_string("config.toml")?;
         Config::from_toml_str(&content)?
     } else {
         Config::default()

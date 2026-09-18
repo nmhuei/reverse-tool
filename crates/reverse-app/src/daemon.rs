@@ -5,7 +5,10 @@ use reverse_core::{
     Config, HealthConfig, HealthStateMachine, InterfaceClassifier, PathHealth, PolicyEngine,
     RoutePlanner,
 };
-use reverse_linux::{detect_best_dns_backend, CapabilityChecker, NetlinkController, PathProber};
+use reverse_linux::{
+    detect_best_dns_backend, resolve_via_system_lookup, CapabilityChecker, NetlinkController,
+    PathProber,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -81,6 +84,11 @@ impl ReversedDaemon {
         }
 
         let listener = UnixListener::bind(&self.socket_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.socket_path, fs::Permissions::from_mode(0o666));
+        }
         tracing::info!("reversed daemon listening on {:?}", self.socket_path);
 
         // Write PID file
@@ -112,7 +120,7 @@ impl ReversedDaemon {
 
         // Spawn background health probe loop
         let state_probe = Arc::clone(&self.state);
-        tokio::spawn(async move {
+        let probe_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(3));
             loop {
                 interval.tick().await;
@@ -138,6 +146,7 @@ impl ReversedDaemon {
                 ifaces_to_probe.sort();
                 ifaces_to_probe.dedup();
 
+                let mut state_changed = false;
                 let health_sm = state.health_sm.clone();
                 for iface in ifaces_to_probe {
                     let ok = PathProber::probe_interface(&iface, None).unwrap_or(false);
@@ -146,10 +155,46 @@ impl ReversedDaemon {
                         .entry(iface.clone())
                         .or_insert_with(PathHealth::default);
 
+                    let was_available = health_sm.is_available(entry);
                     if ok {
                         health_sm.record_success(entry, now);
                     } else {
                         health_sm.record_failure(entry, now);
+                    }
+                    let is_now_available = health_sm.is_available(entry);
+                    if was_available != is_now_available {
+                        tracing::warn!(
+                            "Interface {} availability changed (was: {}, now: {})",
+                            iface,
+                            was_available,
+                            is_now_available
+                        );
+                        state_changed = true;
+                    }
+                }
+
+                if state_changed {
+                    tracing::info!(
+                        "Health state changed, triggering dynamic failover reconciliation..."
+                    );
+                    if let Err(e) = Self::execute_apply(&mut state, false) {
+                        tracing::error!("Dynamic failover reconciliation error: {}", e);
+                    }
+                } else {
+                    // Continuous guard against NetworkManager re-adding rogue default routes on LAN
+                    let netlink = NetlinkController::new();
+                    let wan = state
+                        .default_wan
+                        .clone()
+                        .or_else(|| state.config.wan.interfaces.first().cloned());
+                    if let Some(wan_iface) = wan {
+                        for target in &state.config.targets {
+                            for iface in &target.via {
+                                if iface != &wan_iface {
+                                    let _ = netlink.remove_default_routes_on_interface(iface);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -204,6 +249,9 @@ impl ReversedDaemon {
             }
         }
 
+        // Immediately abort background health task so it cannot race with cleanup!
+        probe_handle.abort();
+
         // Ephemeral lifecycle guarantee: Clean up all custom routing tables, rules, and iptables chains!
         tracing::info!(
             "Restoring system routing and firewall before exit (ephemeral lifecycle)..."
@@ -231,6 +279,13 @@ impl ReversedDaemon {
         state_mgr: StateManager,
         shutdown_tx: tokio::sync::mpsc::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Enforce local privilege boundary: Query peer credentials via SO_PEERCRED
+        let peer_cred = stream.peer_cred().ok();
+        let peer_uid = peer_cred.as_ref().map(|c| c.uid());
+        let is_root = peer_uid == Some(0);
+        let is_owner = peer_uid == Some(unsafe { libc::getuid() });
+        let is_authorized = is_root || is_owner;
+
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
 
@@ -244,6 +299,25 @@ impl ReversedDaemon {
                     continue;
                 }
             };
+
+            // Gate administrative / state-mutating RPC commands
+            match &req {
+                DaemonRequest::Apply { .. }
+                | DaemonRequest::Reset
+                | DaemonRequest::AddTarget(_)
+                | DaemonRequest::RemoveTarget { .. }
+                | DaemonRequest::Shutdown
+                    if !is_authorized =>
+                {
+                    let resp = DaemonResponse::Error(
+                        "Permission denied: State-mutating commands (apply, reset, shutdown, target add/remove) require root (sudo).".into(),
+                    );
+                    let resp_str = serde_json::to_string(&resp)? + "\n";
+                    writer.write_all(resp_str.as_bytes()).await?;
+                    continue;
+                }
+                _ => {}
+            }
 
             let resp = match req {
                 DaemonRequest::Ping => DaemonResponse::Ok("pong".into()),
@@ -354,9 +428,31 @@ impl ReversedDaemon {
         s: &mut DaemonState,
         dry_run: bool,
     ) -> Result<crate::reconcile::ReconcileReport, String> {
+        s.config
+            .validate_strict_lan_policy()
+            .map_err(|error| format!("configuration rejected: {}", error))?;
+        let mut dns_backend = detect_best_dns_backend();
+        let needs_lan_dns = s
+            .config
+            .lan_domains
+            .iter()
+            .any(|domain| s.config.resolve_local_domain(domain).is_none());
+        if !dry_run
+            && needs_lan_dns
+            && (s.config.lan_interfaces.is_empty()
+                || s.config.lan_dns_servers.is_empty()
+                || dns_backend.name() == "Disabled")
+        {
+            return Err(
+                "LAN_DOMAINS require LAN_INTERFACE, LAN_DNS_SERVER, and an available split-DNS backend"
+                    .into(),
+            );
+        }
+
         let netlink = NetlinkController::new();
         let mut ifaces = netlink.get_interfaces().map_err(|e| e.to_string())?;
         for iface in &mut ifaces {
+            iface.gateway = netlink.get_interface_gateway(&iface.name);
             iface.role = InterfaceClassifier::classify(
                 iface,
                 s.default_wan.as_deref(),
@@ -383,7 +479,12 @@ impl ReversedDaemon {
             reverse_core::LanDetector::merge_into_config(&mut s.config, detected);
         }
 
-        let engine = PolicyEngine::from_config(&s.config, &ifaces, s.default_wan.clone());
+        let mut engine = PolicyEngine::from_config(&s.config, &ifaces, s.default_wan.clone());
+        let wan_v6_gateway = s
+            .default_wan
+            .as_deref()
+            .and_then(|wan| netlink.get_interface_gateway_v6(wan));
+        engine.set_wan_ipv6_gateway(wan_v6_gateway);
         let desired_routes = engine.generate_desired_routes(&s.health_map, &s.health_sm);
 
         // Collect split DNS domains
@@ -402,14 +503,36 @@ impl ReversedDaemon {
             desired_routes,
             split_dns,
         );
+        desired.wan_interface = s
+            .default_wan
+            .clone()
+            .or_else(|| s.config.wan.interfaces.first().cloned());
+        desired.lan_interfaces = s.config.lan_interfaces.clone();
+        desired.blacklist = s.config.blacklist.clone();
 
         for target in &s.config.targets {
             for iface in &target.via {
-                desired.firewall_whitelist.push((
-                    iface.clone(),
-                    target.cidr.to_string(),
-                    target.port,
-                ));
+                desired
+                    .firewall_whitelist
+                    .push((iface.clone(), target.cidr.to_string(), None));
+            }
+        }
+        // A raw port-53 allow rule is not domain-aware: any process could
+        // send arbitrary QNAMEs to the LAN resolver. Dynamic LAN DNS is
+        // rejected by strict validation until it is mediated by a dedicated
+        // restricted resolver proxy.
+        for domain in &s.config.lan_domains {
+            if let Some(addresses) = s.config.resolve_local_domain(domain) {
+                for iface in &s.config.lan_interfaces {
+                    for address in addresses {
+                        let prefix = if address.is_ipv4() { 32 } else { 128 };
+                        desired.firewall_whitelist.push((
+                            iface.clone(),
+                            format!("{}/{}", address, prefix),
+                            None,
+                        ));
+                    }
+                }
             }
         }
 
@@ -418,12 +541,43 @@ impl ReversedDaemon {
             .reconcile(&desired, dry_run)
             .map_err(|e| e.to_string())?;
 
-        // Apply DNS if not dry run and succeeded
+        // Apply DNS if not dry run and succeeded. LAN domains are installed
+        // on the LAN link only; other domains retain the normal WLAN resolver.
         if !dry_run && report.applied {
-            let mut dns = detect_best_dns_backend();
             for net in &s.config.networks {
                 if let Some(iface) = net.interfaces.first() {
-                    let _ = dns.apply_split_domains(iface, &net.domains, &net.dns);
+                    let _ = dns_backend.apply_split_domains(iface, &net.domains, &net.dns);
+                }
+            }
+
+            if needs_lan_dns {
+                let lan_iface = s.config.lan_interfaces.first().ok_or_else(|| {
+                    "LAN_DOMAINS are configured without a LAN_INTERFACE".to_string()
+                })?;
+                dns_backend
+                    .apply_split_domains(
+                        lan_iface,
+                        &s.config.lan_domains,
+                        &s.config.lan_dns_servers,
+                    )
+                    .map_err(|error| format!("failed to configure LAN split DNS: {}", error))?;
+
+                let mut answers_changed = false;
+                for domain in s.config.lan_domains.clone() {
+                    let addresses = resolve_via_system_lookup(&domain).map_err(|error| {
+                        format!("LAN DNS lookup failed for {}: {}", domain, error)
+                    })?;
+                    if s.config.resolve_local_domain(&domain) != Some(addresses.as_slice()) {
+                        s.config.local_dns.insert(domain, addresses);
+                        answers_changed = true;
+                    }
+                }
+
+                // The first reconciliation admitted only configured IPs and
+                // the DNS server. Reconcile once more when DNS answers change
+                // so exact result IPs become LAN routes/firewall entries.
+                if answers_changed {
+                    return Self::execute_apply(s, false);
                 }
             }
         }

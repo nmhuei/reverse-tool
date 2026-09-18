@@ -134,6 +134,14 @@ pub enum FallbackAction {
     Unreachable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum RouteType {
+    #[default]
+    Unicast,
+    Unreachable,
+    Blackhole,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Route {
     pub destination: IpNet,
@@ -141,6 +149,8 @@ pub struct Route {
     pub gateway: Option<IpAddr>,
     pub table: u32,
     pub metric: Option<u32>,
+    #[serde(default)]
+    pub route_type: RouteType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -176,6 +186,12 @@ pub struct DesiredState {
     pub dns_split_domains: Vec<(String, IpAddr)>, // (domain, dns_server)
     #[serde(default)]
     pub firewall_whitelist: Vec<(String, String, Option<u16>)>, // (interface, cidr, optional_port)
+    #[serde(default)]
+    pub wan_interface: Option<String>,
+    #[serde(default)]
+    pub lan_interfaces: Vec<String>,
+    #[serde(default)]
+    pub blacklist: Vec<IpNet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

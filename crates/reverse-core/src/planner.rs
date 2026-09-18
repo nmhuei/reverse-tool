@@ -53,6 +53,23 @@ impl RoutePlanner {
                     "Safety violation: Table 52000 MUST NOT contain a default route (0.0.0.0/0 or ::/0)".into(),
                 ));
             }
+
+            // A more specific LAN route wins over a broader blacklist route
+            // in Linux's FIB. Reject the configuration before it gets that
+            // far; relying on firewall rule ordering alone leaves routing and
+            // policy explanations inconsistent.
+            if route.route_type == crate::model::RouteType::Unicast
+                && desired.lan_interfaces.contains(&route.output_interface)
+                && desired
+                    .blacklist
+                    .iter()
+                    .any(|blocked| nets_overlap(*blocked, route.destination))
+            {
+                return Err(CoreError::Planner(format!(
+                    "Safety violation: LAN route {} on {} overlaps blacklist",
+                    route.destination, route.output_interface
+                )));
+            }
         }
         Ok(())
     }
@@ -73,14 +90,21 @@ impl RoutePlanner {
             rules: vec![rule],
             dns_split_domains: split_dns,
             firewall_whitelist: vec![],
+            wan_interface: None,
+            lan_interfaces: vec![],
+            blacklist: vec![],
         }
     }
+}
+
+fn nets_overlap(a: ipnet::IpNet, b: ipnet::IpNet) -> bool {
+    a.contains(&b.network()) || b.contains(&a.network())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Route;
+    use crate::model::{Route, RouteType};
 
     #[test]
     fn test_reject_default_route_safety() {
@@ -90,6 +114,7 @@ mod tests {
             gateway: None,
             table: 52000,
             metric: None,
+            route_type: RouteType::Unicast,
         };
 
         let desired = DesiredState {
@@ -97,6 +122,9 @@ mod tests {
             rules: vec![],
             dns_split_domains: vec![],
             firewall_whitelist: vec![],
+            wan_interface: None,
+            lan_interfaces: vec![],
+            blacklist: vec![],
         };
 
         let res = RoutePlanner::validate_desired_state(&desired);
@@ -113,6 +141,7 @@ mod tests {
                 gateway: None,
                 table: 52000,
                 metric: None,
+                route_type: RouteType::Unicast,
             }],
             rules: vec![RpdbRule {
                 priority: 12000,
@@ -129,6 +158,7 @@ mod tests {
                 gateway: None,
                 table: 52000,
                 metric: None,
+                route_type: RouteType::Unicast,
             }],
             rules: vec![RpdbRule {
                 priority: 12000,
@@ -136,6 +166,9 @@ mod tests {
             }],
             dns_split_domains: vec![],
             firewall_whitelist: vec![],
+            wan_interface: None,
+            lan_interfaces: vec![],
+            blacklist: vec![],
         };
 
         let diff = RoutePlanner::plan_diff(&actual, &desired).unwrap();
@@ -145,5 +178,30 @@ mod tests {
         assert_eq!(diff.routes_to_add[0].output_interface, "eth1");
         assert!(diff.rules_to_add.is_empty());
         assert!(diff.rules_to_remove.is_empty());
+    }
+
+    #[test]
+    fn rejects_more_specific_lan_route_inside_blacklisted_cidr() {
+        let desired = DesiredState {
+            routes: vec![Route {
+                destination: "10.0.0.99/32".parse().unwrap(),
+                output_interface: "eth0".into(),
+                gateway: None,
+                table: 52000,
+                metric: None,
+                route_type: RouteType::Unicast,
+            }],
+            rules: vec![],
+            dns_split_domains: vec![],
+            firewall_whitelist: vec![],
+            wan_interface: Some("wlan1".into()),
+            lan_interfaces: vec!["eth0".into()],
+            blacklist: vec!["10.0.0.0/24".parse().unwrap()],
+        };
+
+        let error = RoutePlanner::validate_desired_state(&desired)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("overlaps blacklist"));
     }
 }

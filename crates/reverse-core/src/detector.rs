@@ -18,7 +18,7 @@ impl LanDetector {
         neighbors: &HashMap<String, Vec<IpAddr>>,
     ) -> DetectedLanProfile {
         let mut networks = Vec::new();
-        let mut targets = Vec::new();
+        let mut targets: Vec<TargetConfig> = Vec::new();
 
         for iface in interfaces {
             // Consider LAN candidates (or any physical interface with carrier & IP that is not WAN/Loopback/Virtual)
@@ -53,13 +53,18 @@ impl LanDetector {
                 }
 
                 let cidr_str = net.trunc().to_string();
-                targets.push(TargetConfig {
-                    name: format!("{}-subnet", iface.name),
-                    cidr: cidr_str,
-                    port: None,
-                    via: vec![iface.name.clone()],
-                    fallback: "drop".into(),
-                });
+                if !targets
+                    .iter()
+                    .any(|t| t.cidr == cidr_str && t.via == vec![iface.name.clone()])
+                {
+                    targets.push(TargetConfig {
+                        name: format!("{}-subnet", iface.name),
+                        cidr: cidr_str,
+                        port: None,
+                        via: vec![iface.name.clone()],
+                        fallback: "drop".into(),
+                    });
+                }
             }
 
             // 2. Add gateway target if discovered (often the LAN server/router)

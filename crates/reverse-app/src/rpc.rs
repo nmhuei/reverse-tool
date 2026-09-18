@@ -55,7 +55,9 @@ pub enum DaemonResponse {
 }
 
 pub fn default_socket_path() -> PathBuf {
-    if Path::new("/run").exists() && unsafe { libc::geteuid() == 0 } {
+    if Path::new("/run/reverse-tool/reversed.sock").exists()
+        || (Path::new("/run").exists() && unsafe { libc::geteuid() == 0 })
+    {
         PathBuf::from("/run/reverse-tool/reversed.sock")
     } else {
         PathBuf::from("/tmp/reverse-tool/reversed.sock")
@@ -63,7 +65,9 @@ pub fn default_socket_path() -> PathBuf {
 }
 
 pub fn default_pid_path() -> PathBuf {
-    if Path::new("/run").exists() && unsafe { libc::geteuid() == 0 } {
+    if Path::new("/run/reverse-tool/reversed.pid").exists()
+        || (Path::new("/run").exists() && unsafe { libc::geteuid() == 0 })
+    {
         PathBuf::from("/run/reverse-tool/reversed.pid")
     } else {
         PathBuf::from("/tmp/reverse-tool/reversed.pid")
@@ -71,9 +75,11 @@ pub fn default_pid_path() -> PathBuf {
 }
 
 pub fn default_log_path() -> PathBuf {
-    if Path::new("/var/log").exists() && unsafe { libc::geteuid() == 0 } {
+    if Path::new("/var/log/reversed.log").exists()
+        || (Path::new("/var/log").exists() && unsafe { libc::geteuid() == 0 })
+    {
         PathBuf::from("/var/log/reversed.log")
-    } else if Path::new("/run").exists() && unsafe { libc::geteuid() == 0 } {
+    } else if Path::new("/run/reverse-tool/reversed.log").exists() {
         PathBuf::from("/run/reverse-tool/reversed.log")
     } else {
         PathBuf::from("/tmp/reverse-tool/reversed.log")

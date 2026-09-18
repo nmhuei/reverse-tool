@@ -30,8 +30,10 @@ pub fn run_doctor() -> DoctorReport {
                 format!("Discovered {} network interfaces", ifaces.len()),
             ));
 
-            // Check default route
-            let wan = netlink.get_default_wan_interface().unwrap_or(None);
+            // Check default route or configured WAN
+            let cfg = crate::commands::load_config_or_default(None);
+            let explicit_wan = cfg.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+            let wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
             checks.push((
                 "Default WAN route".into(),
                 wan.is_some(),
@@ -45,7 +47,8 @@ pub fn run_doctor() -> DoctorReport {
             // Check LAN candidates
             let mut lan_count = 0;
             for iface in &ifaces {
-                let role = InterfaceClassifier::classify(iface, wan.as_deref(), &[]);
+                let role =
+                    InterfaceClassifier::classify(iface, wan.as_deref(), &cfg.wan.interfaces);
                 if role == reverse_core::InterfaceRole::Lan {
                     lan_count += 1;
                 }

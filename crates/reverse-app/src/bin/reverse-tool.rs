@@ -49,6 +49,25 @@ enum Commands {
     /// Run system diagnostic checks for Netlink, capabilities, and DNS
     Doctor,
 
+    /// Capture outbound connect metadata for an agent command (no payloads)
+    Capture {
+        /// Agent label stored in the report
+        #[arg(long)]
+        label: String,
+        /// Maximum runtime in seconds
+        #[arg(long, default_value_t = 20)]
+        duration: u64,
+        /// JSON report output path
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional file to append validated /32 or /128 entries to
+        #[arg(long)]
+        promote_blacklist: Option<PathBuf>,
+        /// Agent executable and arguments, after `--`
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+
     /// Automatically detect LAN subnets and server IPs and configure policies
     #[command(alias = "auto")]
     Autoconfig {
@@ -128,10 +147,33 @@ async fn main() {
             handle_explain(&client, &target, cli.config.as_deref()).await;
         }
         Commands::Apply { dry_run } => {
-            handle_apply(&client, dry_run, cli.config.as_deref()).await;
+            if let Err(error) = handle_apply(&client, dry_run, cli.config.as_deref()).await {
+                eprintln!("\x1b[1;31mApply failed: {}\x1b[0m", error);
+                std::process::exit(1);
+            }
         }
         Commands::Reset => handle_reset(&client).await,
         Commands::Doctor => handle_doctor().await,
+        Commands::Capture {
+            label,
+            duration,
+            output,
+            promote_blacklist,
+            command,
+        } => {
+            if let Err(err) = reverse_app::commands::capture::handle_capture(
+                &label,
+                duration,
+                output.as_deref(),
+                promote_blacklist.as_deref(),
+                command,
+            )
+            .await
+            {
+                eprintln!("capture failed: {}", err);
+                std::process::exit(1);
+            }
+        }
         Commands::Autoconfig { save, apply } => {
             handle_autoconfig(&client, save, apply, cli.config.as_deref()).await;
         }

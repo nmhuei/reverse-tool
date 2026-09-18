@@ -13,12 +13,15 @@ pub async fn handle_autoconfig(
     config_path: Option<&Path>,
 ) {
     println!("\n=== Auto-Detecting LAN Subnets & Servers ===");
+    let cfg = load_config_or_default(config_path);
     let netlink = NetlinkController::new();
     let mut ifaces = netlink.get_interfaces().unwrap_or_default();
-    let default_wan = netlink.get_default_wan_interface().unwrap_or(None);
+    let explicit_wan = cfg.wan.interfaces.first().filter(|w| *w != "auto").cloned();
+    let default_wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
-        iface.role = InterfaceClassifier::classify(iface, default_wan.as_deref(), &[]);
+        iface.role =
+            InterfaceClassifier::classify(iface, default_wan.as_deref(), &cfg.wan.interfaces);
     }
 
     let mut gateways = HashMap::new();
@@ -81,10 +84,8 @@ pub async fn handle_autoconfig(
     let target_save_path = config_path.map(PathBuf::from).unwrap_or_else(|| {
         if Path::new("/etc/reverse-tool").exists() && unsafe { libc::geteuid() == 0 } {
             PathBuf::from("/etc/reverse-tool/config.toml")
-        } else if Path::new("config.toml").exists() {
-            PathBuf::from("config.toml")
         } else {
-            PathBuf::from("config/example.toml")
+            PathBuf::from("config.toml")
         }
     });
 
@@ -120,6 +121,8 @@ pub async fn handle_autoconfig(
 
     if apply {
         println!("\x1b[1;34m[*] Applying detected configuration...\x1b[0m");
-        handle_apply(client, false, Some(&target_save_path)).await;
+        if let Err(error) = handle_apply(client, false, Some(&target_save_path)).await {
+            eprintln!("\x1b[1;31mApply failed: {}\x1b[0m", error);
+        }
     }
 }

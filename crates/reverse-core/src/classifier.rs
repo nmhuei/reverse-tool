@@ -67,6 +67,23 @@ impl TargetClassifier {
             return Err(CoreError::InvalidTarget("Target cannot be empty".into()));
         }
 
+        // Support host:port or URL in target_str (e.g. 10.0.0.10:999 or http://10.0.0.10:8080)
+        if let Some((cidr_spec, _)) = crate::config::parse_target_spec(trimmed) {
+            if cidr_spec != trimmed {
+                if let Ok(ip) = IpAddr::from_str(&cidr_spec) {
+                    return Ok(TargetMatcher::HostIp(ip));
+                }
+                if let Ok(net) = IpNet::from_str(&cidr_spec) {
+                    if (net.addr().is_ipv4() && net.prefix_len() == 32)
+                        || (net.addr().is_ipv6() && net.prefix_len() == 128)
+                    {
+                        return Ok(TargetMatcher::HostIp(net.addr()));
+                    }
+                    return Ok(TargetMatcher::Cidr(net));
+                }
+            }
+        }
+
         // Check if single IP
         if let Ok(ip) = IpAddr::from_str(trimmed) {
             return Ok(TargetMatcher::HostIp(ip));

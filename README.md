@@ -8,11 +8,13 @@ A **Policy-Routing Orchestrator with Daemon** for Linux network segmentation and
 
 ## Key Principles & Architecture
 
-1. **Never Hijack Default Internet Route**:
+1. **LAN allowlist, WLAN default**:
    - Table `52000` (custom isolated routing table)
    - RPDB priority `12000` (placed ahead of `main` table `32766`)
    - Table `52000` **never** contains a default route (`0.0.0.0/0`).
-   - Normal Internet traffic falls through cleanly to the host's `main` table (Wi-Fi/WAN).
+   - `wlan0` receives the lower numeric metric and is the normal path for all
+     destinations not explicitly authorized for LAN.
+   - Exact IP/CIDR routes are the only entries that select the LAN interface.
 2. **Three Operating Modes**:
    - `auto`: Discovers connected subnets of LAN interfaces and routes them via isolated tables.
    - `manual`: Only routes user-specified targets and subnets.
@@ -33,8 +35,15 @@ A **Policy-Routing Orchestrator with Daemon** for Linux network segmentation and
 3. **Failover with Safety Drop**:
    - Monitored paths follow a hysteresis state machine (`UNKNOWN` -> `HEALTHY` -> `DEGRADED` -> `DOWN` -> `RECOVERING` -> `HEALTHY`).
    - If preferred and fallback lab interfaces fail, the target is **DROPPED** (`DROP`). Lab traffic is **never leaked to the public Internet/WAN**!
-4. **Split DNS**:
-   - Integrates with NetworkManager (routing domains `~domain`) and `systemd-resolved` per-link routing domains without dirtying `/etc/resolv.conf`.
+4. **LAN split DNS**:
+   - `LAN_DOMAINS` resolve through `LAN_DNS_SERVER` on the LAN interface.
+   - Returned A/AAAA addresses are installed as exact LAN destinations; unknown
+     domains continue through WLAN.
+   - `LOCAL_DNS_RECORDS` is optional and provides static answers without a
+     live DNS query.
+5. **Agent blacklist**:
+   - `BLACKLIST_IPS` has higher priority than every LAN route, is pinned to
+     WLAN, and is dropped on the LAN egress chain for both IPv4 and IPv6.
 
 ---
 
@@ -120,7 +129,22 @@ reverse-tool -c config/example.toml explain victim.malware.lab
 reverse-tool -c config/example.toml explain google.com
 ```
 
-### 4. Apply Policy (`apply`)
+### 5. Capture Agent Endpoints (metadata only)
+
+Capture outbound `connect()` destinations for a bounded agent run. The command
+does not store payloads, headers, cookies, or tokens.
+
+```bash
+reverse-tool capture --label codex --duration 20 \
+  --output /tmp/codex-endpoints.json \
+  --promote-blacklist config/captured.blacklist \
+  -- codex --help
+```
+
+Promoted entries are individual `/32` or `/128` addresses; review CDN address
+rotation before copying them into `BLACKLIST_IPS`.
+
+### 6. Apply Policy (`apply`)
 
 ```bash
 # Dry-run mode: View diff without modifying kernel routing tables or rules
@@ -130,7 +154,7 @@ reverse-tool -c config/example.toml apply --dry-run
 sudo reverse-tool -c config/example.toml apply
 ```
 
-### 5. Running the Background Daemon (`reversed`)
+### 7. Running the Background Daemon (`reversed`)
 
 ```bash
 # Run daemon directly
@@ -145,7 +169,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now reversed
 ```
 
-### 6. Clean Teardown (`reset`)
+### 8. Clean Teardown (`reset`)
 
 ```bash
 sudo reverse-tool reset

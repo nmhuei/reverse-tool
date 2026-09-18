@@ -18,7 +18,6 @@ pub async fn handle_daemon_start(client: &DaemonClient, config_path: Option<&Pat
     let binary_path = find_reversed_binary();
 
     let mut cmd = Command::new(&binary_path);
-    cmd.arg("--daemon");
 
     if let Some(cfg) = config_path {
         cmd.arg("-c").arg(cfg);

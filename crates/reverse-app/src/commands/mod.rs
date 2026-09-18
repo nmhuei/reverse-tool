@@ -1,4 +1,5 @@
 pub mod autoconfig;
+pub mod capture;
 pub mod daemon;
 pub mod doctor;
 
@@ -70,15 +71,16 @@ fn print_interfaces(ifaces: &[reverse_core::Interface], default_wan: Option<&str
             ips.join(", ")
         };
 
+        let role_plain = format!("{}", i.role);
         let role_colored = match i.role {
-            reverse_core::InterfaceRole::Wan => format!("\x1b[1;34m{}\x1b[0m", i.role),
-            reverse_core::InterfaceRole::Lan => format!("\x1b[1;32m{}\x1b[0m", i.role),
-            reverse_core::InterfaceRole::Vpn => format!("\x1b[1;35m{}\x1b[0m", i.role),
-            _ => format!("{}", i.role),
+            reverse_core::InterfaceRole::Wan => format!("\x1b[1;34m{:<10}\x1b[0m", role_plain),
+            reverse_core::InterfaceRole::Lan => format!("\x1b[1;32m{:<10}\x1b[0m", role_plain),
+            reverse_core::InterfaceRole::Vpn => format!("\x1b[1;35m{:<10}\x1b[0m", role_plain),
+            _ => format!("{:<10}", role_plain),
         };
 
         println!(
-            "{:<6} {:<12} {:<10} {:<10} {:<8} {:<24}",
+            "{:<6} {:<12} {} {:<10} {:<8} {:<24}",
             i.index,
             i.name,
             role_colored,
@@ -141,10 +143,15 @@ pub async fn handle_explain(client: &DaemonClient, target: &str, config_path: Op
     let wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
+        iface.gateway = netlink.get_interface_gateway(&iface.name);
         iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &cfg.wan.interfaces);
     }
 
-    let engine = PolicyEngine::from_config(&cfg, &ifaces, wan);
+    let mut engine = PolicyEngine::from_config(&cfg, &ifaces, wan.clone());
+    engine.set_wan_ipv6_gateway(
+        wan.as_deref()
+            .and_then(|name| netlink.get_interface_gateway_v6(name)),
+    );
     let health_sm = HealthStateMachine::new(HealthConfig::default());
     let mut health_map = HashMap::new();
 
@@ -190,8 +197,14 @@ fn print_decision(dec: &reverse_core::Decision) {
     println!();
 }
 
-pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Option<&Path>) {
+pub async fn handle_apply(
+    client: &DaemonClient,
+    dry_run: bool,
+    config_path: Option<&Path>,
+) -> Result<(), String> {
     let cfg = load_config_or_default(config_path);
+    cfg.validate_strict_lan_policy()
+        .map_err(|error| format!("configuration rejected: {}", error))?;
     let toml_str = cfg.to_toml_string().ok();
 
     if client.is_alive().await {
@@ -204,11 +217,10 @@ pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Opt
         {
             Ok(DaemonResponse::Apply(rep)) => {
                 print_apply_report(&rep);
-                return;
+                return rep.error.map_or(Ok(()), Err);
             }
             Ok(DaemonResponse::Error(e)) => {
-                eprintln!("\x1b[1;31mApply Error: {}\x1b[0m", e);
-                return;
+                return Err(e);
             }
             _ => {}
         }
@@ -222,10 +234,15 @@ pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Opt
     let wan = explicit_wan.or_else(|| netlink.get_default_wan_interface().unwrap_or(None));
 
     for iface in &mut ifaces {
+        iface.gateway = netlink.get_interface_gateway(&iface.name);
         iface.role = InterfaceClassifier::classify(iface, wan.as_deref(), &cfg.wan.interfaces);
     }
 
-    let engine = PolicyEngine::from_config(&cfg, &ifaces, wan);
+    let mut engine = PolicyEngine::from_config(&cfg, &ifaces, wan.clone());
+    engine.set_wan_ipv6_gateway(
+        wan.as_deref()
+            .and_then(|name| netlink.get_interface_gateway_v6(name)),
+    );
     let health_sm = HealthStateMachine::new(HealthConfig::default());
     let mut health_map = HashMap::new();
 
@@ -244,19 +261,43 @@ pub async fn handle_apply(client: &DaemonClient, dry_run: bool, config_path: Opt
         routes,
         vec![],
     );
+    desired.wan_interface = wan.clone();
+    desired.lan_interfaces = cfg.lan_interfaces.clone();
+    desired.blacklist = cfg.blacklist.clone();
 
     for target in &cfg.targets {
         for iface in &target.via {
             desired
                 .firewall_whitelist
-                .push((iface.clone(), target.cidr.to_string(), target.port));
+                .push((iface.clone(), target.cidr.to_string(), None));
+        }
+    }
+    // Do not admit a LAN DNS server to the generic OUTPUT allowlist. Packet
+    // filtering cannot inspect the DNS QNAME, so doing so lets any process
+    // query arbitrary names directly over LAN. Strict validation rejects
+    // dynamic LAN DNS until a restricted resolver proxy exists.
+    for domain in &cfg.lan_domains {
+        if let Some(addresses) = cfg.resolve_local_domain(domain) {
+            for iface in &cfg.lan_interfaces {
+                for address in addresses {
+                    let prefix = if address.is_ipv4() { 32 } else { 128 };
+                    desired.firewall_whitelist.push((
+                        iface.clone(),
+                        format!("{}/{}", address, prefix),
+                        None,
+                    ));
+                }
+            }
         }
     }
 
     let reconciler = crate::reconcile::Reconciler::new(StateManager::new());
     match reconciler.reconcile(&desired, dry_run) {
-        Ok(rep) => print_apply_report(&rep),
-        Err(e) => eprintln!("\x1b[1;31mApply failed: {}\x1b[0m", e),
+        Ok(rep) => {
+            print_apply_report(&rep);
+            rep.error.map_or(Ok(()), Err)
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -364,11 +405,7 @@ pub async fn handle_target_list(client: &DaemonClient) {
 pub fn load_config_or_default(config_path: Option<&Path>) -> Config {
     let mut config = if let Some(path) = config_path {
         if let Ok(content) = fs::read_to_string(path) {
-            if let Ok(cfg) = Config::from_toml_str(&content) {
-                cfg
-            } else {
-                Config::default()
-            }
+            Config::from_toml_str(&content).unwrap_or_default()
         } else {
             Config::default()
         }
@@ -376,7 +413,6 @@ pub fn load_config_or_default(config_path: Option<&Path>) -> Config {
         let default_paths = [
             Path::new("/etc/reverse-tool/config.toml"),
             Path::new("config.toml"),
-            Path::new("config/example.toml"),
         ];
 
         let mut loaded = None;

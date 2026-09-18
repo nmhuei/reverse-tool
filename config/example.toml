@@ -1,6 +1,12 @@
 # reverse-tool Policy Routing Configuration
-# Default mode: hybrid (Manual exact > Manual domain > Manual CIDR > Domain suffix > Auto LAN > WAN)
-mode = "hybrid"
+# Default mode: manual LAN allowlist with WLAN as the default path.
+mode = "manual"
+
+# Addresses that must not leave through LAN, plus the explicit LAN DNS policy.
+blacklist = ["203.0.113.10/32", "2001:db8::10/128"]
+lan_interfaces = ["eth0"]
+lan_domains = ["server.lab", "api.challenge.local"]
+lan_dns_servers = ["10.0.0.53"]
 
 [defaults]
 unknown = "wan"
@@ -10,10 +16,15 @@ table_id = 52000
 rule_priority = 12000
 
 [wan]
-# "auto" uses default route interface, or specify e.g. ["wlan0"]
-interfaces = ["auto"]
+# WLAN has the lower numeric metric and is the normal route for all
+# destinations that do not match LAN targets below.
+interfaces = ["wlan0"]
 
-# Define segmented lab networks
+# Static authoritative records used by reverse-tool policy decisions.
+[local_dns]
+"server.lab" = ["192.0.2.20", "2001:db8::20"]
+
+# Optional static answer for a LAN domain. Omit it to resolve via lan_dns_servers.
 [[networks]]
 name = "malware-lab"
 role = "lan"

@@ -1,6 +1,6 @@
 use crate::error::LinuxError;
 use ipnet::IpNet;
-use reverse_core::{Interface, InterfaceRole, Route, RpdbRule};
+use reverse_core::{Interface, InterfaceRole, Route, RouteType, RpdbRule};
 use std::collections::HashSet;
 use std::fs;
 use std::net::IpAddr;
@@ -132,6 +132,14 @@ impl NetlinkController {
         Ok(None)
     }
 
+    /// True when the main route table has a usable default route on `iface`.
+    pub fn has_default_route_on_interface(&self, iface: &str) -> Result<bool, LinuxError> {
+        let output = Command::new("ip")
+            .args(["route", "show", "default", "dev", iface])
+            .output()?;
+        Ok(output.status.success() && has_default_route(&String::from_utf8_lossy(&output.stdout)))
+    }
+
     /// Removes rogue default routes on a target LAN interface from table main,
     /// ensuring LAN can never hijack general Internet (WLAN) traffic.
     pub fn remove_default_routes_on_interface(&self, iface_name: &str) -> Result<(), LinuxError> {
@@ -143,14 +151,125 @@ impl NetlinkController {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if !line.trim().is_empty() {
-                    let _ = Command::new("ip")
+                    let delete = Command::new("ip")
                         .args(["route", "del", "default", "dev", iface_name])
                         .output();
+                    let delete = delete?;
+                    if !delete.status.success() {
+                        return Err(command_failure(
+                            "ip",
+                            &["route", "del", "default", "dev", iface_name],
+                            &delete,
+                        ));
+                    }
                     tracing::info!(
                         "Removed rogue default route on LAN interface {}: {}",
                         iface_name,
                         line.trim()
                     );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Prioritizes the WAN interface in table main by installing metric 50 routes
+    /// (metric 50 has higher priority in Linux than wired Ethernet metric 100).
+    pub fn prioritize_wan_interface(&self, wan_iface: &str) -> Result<(), LinuxError> {
+        let output = Command::new("ip")
+            .args(["route", "show", "dev", wan_iface])
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.is_empty() {
+                    continue;
+                }
+
+                // If already metric 50, skip
+                if parts.contains(&"metric") {
+                    if let Some(pos) = parts.iter().position(|&p| p == "metric") {
+                        if parts.get(pos + 1) == Some(&"50") {
+                            continue;
+                        }
+                    }
+                }
+
+                // Default route: default via <gw> dev <wan_iface>
+                if parts[0] == "default" {
+                    if let Some(gw_idx) = parts.iter().position(|&p| p == "via") {
+                        if let Some(gw) = parts.get(gw_idx + 1) {
+                            let replace = Command::new("ip")
+                                .args([
+                                    "route", "replace", "default", "via", gw, "dev", wan_iface,
+                                    "metric", "50",
+                                ])
+                                .output();
+                            let replace = replace?;
+                            if !replace.status.success() {
+                                return Err(command_failure(
+                                    "ip",
+                                    &[
+                                        "route", "replace", "default", "via", gw, "dev", wan_iface,
+                                        "metric", "50",
+                                    ],
+                                    &replace,
+                                ));
+                            }
+                            tracing::info!(
+                                "Prioritized WAN default route on {} with metric 50",
+                                wan_iface
+                            );
+                        }
+                    }
+                } else if parts[0].contains('/') {
+                    // Subnet route: e.g. 192.168.1.0/24
+                    let cidr = parts[0];
+                    let replace = Command::new("ip")
+                        .args(["route", "replace", cidr, "dev", wan_iface, "metric", "50"])
+                        .output();
+                    let replace = replace?;
+                    if !replace.status.success() {
+                        return Err(command_failure(
+                            "ip",
+                            &["route", "replace", cidr, "dev", wan_iface, "metric", "50"],
+                            &replace,
+                        ));
+                    }
+                    tracing::info!(
+                        "Prioritized WAN subnet route {} on {} with metric 50",
+                        cidr,
+                        wan_iface
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Restores original WAN routing by removing temporary metric 50 routes.
+    pub fn restore_wan_interface(&self, wan_iface: &str) -> Result<(), LinuxError> {
+        let output = Command::new("ip")
+            .args(["route", "show", "dev", wan_iface])
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.contains(&"metric") {
+                    if let Some(pos) = parts.iter().position(|&p| p == "metric") {
+                        if parts.get(pos + 1) == Some(&"50") {
+                            let dest = parts[0];
+                            let _ = Command::new("ip")
+                                .args(["route", "del", dest, "dev", wan_iface, "metric", "50"])
+                                .output();
+                        }
+                    }
                 }
             }
         }
@@ -222,8 +341,15 @@ impl NetlinkController {
                     continue;
                 }
 
-                // Destination
-                let dest_str = parts[0];
+                // Identify route type and destination
+                let (dest_str, route_type) = if parts[0] == "unreachable" && parts.len() > 1 {
+                    (parts[1], RouteType::Unreachable)
+                } else if parts[0] == "blackhole" && parts.len() > 1 {
+                    (parts[1], RouteType::Blackhole)
+                } else {
+                    (parts[0], RouteType::Unicast)
+                };
+
                 let dest = if let Ok(net) = IpNet::from_str(dest_str) {
                     net
                 } else if let Ok(ip) = IpAddr::from_str(dest_str) {
@@ -250,13 +376,14 @@ impl NetlinkController {
                     }
                 }
 
-                if !out_iface.is_empty() {
+                if !out_iface.is_empty() || route_type != RouteType::Unicast {
                     routes.push(Route {
                         destination: dest,
                         output_interface: out_iface,
                         gateway,
                         table,
                         metric,
+                        route_type,
                     });
                 }
             }
@@ -364,25 +491,46 @@ impl NetlinkController {
             ));
         }
 
-        let mut args = vec![
-            "route".to_string(),
-            "replace".to_string(), // use replace for idempotence
-            route.destination.to_string(),
-            "dev".to_string(),
-            route.output_interface.clone(),
-            "table".to_string(),
-            route.table.to_string(),
-        ];
+        let args = if route.route_type == RouteType::Unreachable {
+            vec![
+                "route".to_string(),
+                "replace".to_string(),
+                "unreachable".to_string(),
+                route.destination.trunc().to_string(),
+                "table".to_string(),
+                route.table.to_string(),
+            ]
+        } else if route.route_type == RouteType::Blackhole {
+            vec![
+                "route".to_string(),
+                "replace".to_string(),
+                "blackhole".to_string(),
+                route.destination.trunc().to_string(),
+                "table".to_string(),
+                route.table.to_string(),
+            ]
+        } else {
+            let mut a = vec![
+                "route".to_string(),
+                "replace".to_string(), // use replace for idempotence
+                route.destination.trunc().to_string(),
+                "dev".to_string(),
+                route.output_interface.clone(),
+                "table".to_string(),
+                route.table.to_string(),
+            ];
 
-        if let Some(gw) = route.gateway {
-            args.push("via".to_string());
-            args.push(gw.to_string());
-        }
+            if let Some(gw) = route.gateway {
+                a.push("via".to_string());
+                a.push(gw.to_string());
+            }
 
-        if let Some(metric) = route.metric {
-            args.push("metric".to_string());
-            args.push(metric.to_string());
-        }
+            if let Some(metric) = route.metric {
+                a.push("metric".to_string());
+                a.push(metric.to_string());
+            }
+            a
+        };
 
         let output = Command::new("ip").args(&args).output()?;
         if !output.status.success() {
@@ -398,19 +546,34 @@ impl NetlinkController {
 
     /// Delete a route from custom table
     pub fn delete_route(&self, route: &Route) -> Result<(), LinuxError> {
-        let dest_str = route.destination.to_string();
+        let dest_str = route.destination.trunc().to_string();
         let table_str = route.table.to_string();
-        let args = [
-            "route",
-            "del",
-            &dest_str,
-            "dev",
-            &route.output_interface,
-            "table",
-            &table_str,
-        ];
+        let args = if route.route_type == RouteType::Unreachable {
+            vec![
+                "route",
+                "del",
+                "unreachable",
+                &dest_str,
+                "table",
+                &table_str,
+            ]
+        } else if route.route_type == RouteType::Blackhole {
+            vec!["route", "del", "blackhole", &dest_str, "table", &table_str]
+        } else if !route.output_interface.is_empty() {
+            vec![
+                "route",
+                "del",
+                &dest_str,
+                "dev",
+                &route.output_interface,
+                "table",
+                &table_str,
+            ]
+        } else {
+            vec!["route", "del", &dest_str, "table", &table_str]
+        };
 
-        let output = Command::new("ip").args(args).output()?;
+        let output = Command::new("ip").args(&args).output()?;
         // Ignore "No such process" if already deleted
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -422,6 +585,18 @@ impl NetlinkController {
             }
         }
 
+        Ok(())
+    }
+
+    /// Flush all routes in a specific routing table
+    pub fn flush_table(&self, table: u32) -> Result<(), LinuxError> {
+        let output = Command::new("ip")
+            .args(["route", "flush", "table", &table.to_string()])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Flushing table {} returned: {}", table, stderr);
+        }
         Ok(())
     }
 
@@ -440,6 +615,35 @@ impl NetlinkController {
                     if let Some(gw_str) = parts.get(pos + 1) {
                         if let Ok(gw) = IpAddr::from_str(gw_str) {
                             return Some(gw);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Query an IPv6 default gateway on an interface.
+    ///
+    /// `get_interface_gateway` intentionally uses the IPv4 route table.  Keep
+    /// IPv6 discovery separate so callers never accidentally install an IPv4
+    /// gateway on an IPv6 route (or vice versa).
+    pub fn get_interface_gateway_v6(&self, iface: &str) -> Option<IpAddr> {
+        let output = Command::new("ip")
+            .args(["-6", "route", "show", "default", "dev", iface])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(pos) = parts.iter().position(|&p| p == "via") {
+                    if let Some(gw_str) = parts.get(pos + 1) {
+                        if let Ok(gw) = gw_str.parse::<IpAddr>() {
+                            if gw.is_ipv6() {
+                                return Some(gw);
+                            }
                         }
                     }
                 }
@@ -494,9 +698,38 @@ impl NetlinkController {
     }
 }
 
+fn command_failure(binary: &str, args: &[&str], output: &std::process::Output) -> LinuxError {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    LinuxError::Netlink(format!(
+        "{} {} exited {}{}",
+        binary,
+        args.join(" "),
+        output.status,
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", stderr)
+        }
+    ))
+}
+
+fn has_default_route(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some("default"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_route_parser_requires_default_entry() {
+        assert!(has_default_route(
+            "default via 192.0.2.1 dev wlan0 metric 50\n"
+        ));
+        assert!(!has_default_route("192.0.2.0/24 dev wlan0 proto kernel\n"));
+    }
 
     #[test]
     fn test_read_interfaces() {
