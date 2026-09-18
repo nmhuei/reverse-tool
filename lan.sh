@@ -260,6 +260,31 @@ open_terminal() {
         xhost +SI:localuser:"$REAL_USER" >/dev/null 2>&1 || xhost +local: >/dev/null 2>&1 || true
     fi
 
+    # Neu co tham so --new / -n / --gui thi mo mot cua so Terminal GUI moi tren Desktop
+    if [ "$1" = "--new" ] || [ "$1" = "-n" ] || [ "$1" = "--gui" ]; then
+        local TERM_BIN=""
+        for t in x-terminal-emulator konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty xterm; do
+            if command -v "$t" >/dev/null 2>&1; then
+                TERM_BIN="$t"
+                break
+            fi
+        done
+
+        if [ -n "$TERM_BIN" ]; then
+            log_ok "Dang mo cua so Terminal moi ($TERM_BIN) ket noi mang LAN..."
+            ip netns exec "$NS_NAME" sudo -u "$REAL_USER" -H \
+                DISPLAY="$SAVED_DISPLAY" \
+                XAUTHORITY="$SAVED_XAUTH" \
+                WAYLAND_DISPLAY="$SAVED_WAYLAND" \
+                XDG_RUNTIME_DIR="$SAVED_XDG_RUNTIME" \
+                "$TERM_BIN" >/dev/null 2>&1 &
+            log_ok "Cua so Terminal LAN da duoc mo thanh cong!"
+            return 0
+        else
+            log_warn "Khong tim thay trinh gia lap terminal GUI (konsole/xterm), chuyen sang mo trong terminal hien tai..."
+        fi
+    fi
+
     log_ok "Dang vao Terminal mang LAN ($ETH_DEV)..."
     ip netns exec "$NS_NAME" sudo -u "$REAL_USER" -H \
         bash -c "
@@ -501,13 +526,14 @@ show_help() {
     echo "  status | info           Xem thong tin & so sanh IP giua Host va LAN"
     echo "  test | check | ping     Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
     echo "  exec | run <cmd...>     Chay truc tiep mot lenh bat ky qua mang LAN"
-    echo "  term | terminal | shell Mo Terminal (Bash) doc lap trong mang LAN"
+    echo "  term | shell [--new]    Mo Terminal (Bash) doc lap trong mang LAN (them --new de bat cua so GUI moi)"
     echo "  chrome | chromium [url] Mo Chromium chay rieng biet qua mang LAN (DoH Cloudflare)"
     echo "  renew | dhcp            Xin lai dia chi IP dong (DHCP) cho card LAN"
     echo "  help | -h | --help      Hien thi huong dan su dung nay"
     echo ""
     echo -e "\033[1;33mVi du su dung:\033[0m"
-    echo "  sudo $0 init"
+    echo "  sudo $0 term                     # Vao Terminal mang LAN ngay trong tab nay"
+    echo "  sudo $0 term --new               # Bat mot cua so Terminal GUI moi tren Desktop"
     echo "  sudo $0 exec curl -s https://api.ipify.org"
     echo "  sudo $0 exec ping -c 3 1.1.1.1"
     echo "  sudo $0 exec nmap -sP 192.168.1.0/24"
@@ -561,7 +587,7 @@ case "$COMMAND" in
         exec_command "$@"
         ;;
     term|terminal|shell)
-        open_terminal
+        open_terminal "$@"
         ;;
     chrome|chromium|browser)
         open_chromium "$@"
