@@ -526,6 +526,27 @@ stop_netns() {
 }
 
 # ------------------------------------------------------------------------------
+# 9. Install and Uninstall CLI
+# ------------------------------------------------------------------------------
+install_cli() {
+    local src_path
+    src_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    local target_bin="/usr/local/bin/lan"
+
+    log_info "Dang cai dat LAN CLI vao $target_bin..."
+    install -m 755 "$src_path" "$target_bin"
+    [ -d "$REAL_HOME/.local/bin" ] && ln -sf "$target_bin" "$REAL_HOME/.local/bin/lan" 2>/dev/null || true
+
+    log_ok "Cai dat thanh cong! Gio day ban co the dung 'sudo lan term' hoac 'sudo lan browser' o moi noi."
+}
+
+uninstall_cli() {
+    log_info "Dang go bo LAN CLI khoi he thong..."
+    rm -f "/usr/local/bin/lan" "$REAL_HOME/.local/bin/lan" 2>/dev/null || true
+    log_ok "Da go bo thanh cong LAN CLI!"
+}
+
+# ------------------------------------------------------------------------------
 # CLI Help / Usage
 # ------------------------------------------------------------------------------
 show_help() {
@@ -549,6 +570,7 @@ show_help() {
     echo "  sudo $cmd browser [url]    -> Mo trinh duyet voi URL tuy chon"
     echo "  sudo $cmd status           -> Xem so sanh IP giua mang Host va mang LAN"
     echo "  sudo $cmd test             -> Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
+    echo "  sudo $cmd install          -> Cai dat 'lan' thanh lenh toan cuc he thong"
     echo "  $cmd --help                -> Hien thi huong dan nay (khong can sudo)"
     echo ""
 }
@@ -564,7 +586,7 @@ case "$COMMAND" in
         show_help
         exit 0
         ;;
-    up|init|start|down|stop|revert|restart|exec|run|term|terminal|shell|chrome|chromium|browser|test|check|ping|status|info|renew|dhcp)
+    up|init|start|down|stop|revert|restart|exec|run|term|terminal|shell|chrome|chromium|browser|test|check|ping|status|info|renew|dhcp|install|uninstall)
         # Lenh hop le -> tiep tuc xu ly
         ;;
     *)
@@ -609,5 +631,11 @@ case "$COMMAND" in
         ;;
     renew|dhcp)
         renew_dhcp
+        ;;
+    install)
+        install_cli
+        ;;
+    uninstall)
+        uninstall_cli
         ;;
 esac
