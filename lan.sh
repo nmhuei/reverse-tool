@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # LAN Network Manager (CLI) - Antigravity
-# Tách biệt mạng LAN (enp2s0) bằng Linux Network Namespace
+# Tách biệt mạng LAN bằng Linux Network Namespace
 # ==============================================================================
 set -o pipefail
 
 NS_NAME="lan_ns"
-ETH_DEV="enp2s0"
+ETH_DEV="${ETH_DEV:-enp2s0}"
 
 # --- Logging Helpers ---
 log_ok()    { echo -e "\033[1;32m[+]\033[0m $*" >&2; }
@@ -39,12 +39,57 @@ ensure_root() {
     fi
 }
 
-check_interface() {
-    ip link show "$ETH_DEV" >/dev/null 2>&1 || \
-    ip netns exec "$NS_NAME" ip link show "$ETH_DEV" >/dev/null 2>&1 || {
-        log_error "Không tìm thấy card mạng '$ETH_DEV'."
-        return 1
-    }
+detect_interface() {
+    # 1. Kiểm tra card cấu hình sẵn trên Host hoặc trong Namespace
+    if ip link show "$ETH_DEV" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ip netns list 2>/dev/null | grep -qw "$NS_NAME"; then
+        if ip netns exec "$NS_NAME" ip link show "$ETH_DEV" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    # 2. Chờ tối đa 1.5s phòng trường hợp driver Realtek/PHY đang reset khi vừa cắm dây
+    for _ in 1 2 3; do
+        sleep 0.5
+        if ip link show "$ETH_DEV" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+
+    # 3. Tự động quét card Ethernet vật lý trên Host (en*, eth*)
+    local auto_dev=""
+    for dev_path in /sys/class/net/*; do
+        local dname; dname=$(basename "$dev_path")
+        [ "$dname" = "lo" ] && continue
+        [ -d "$dev_path/wireless" ] && continue
+        if [ -d "$dev_path/device" ]; then
+            auto_dev="$dname"
+            break
+        fi
+    done
+
+    if [ -n "$auto_dev" ]; then
+        log_warn "Tự động nhận diện card LAN: $auto_dev"
+        ETH_DEV="$auto_dev"
+        return 0
+    fi
+
+    # 4. Kiểm tra xem có card nào trong namespace chưa
+    if ip netns list 2>/dev/null | grep -qw "$NS_NAME"; then
+        local ns_dev
+        ns_dev=$(ip netns exec "$NS_NAME" ip -br link show 2>/dev/null | grep -v "^lo" | awk '{print $1}' | head -n 1)
+        if [ -n "$ns_dev" ]; then
+            ETH_DEV="$ns_dev"
+            return 0
+        fi
+    fi
+
+    log_error "Không tìm thấy card mạng LAN '$ETH_DEV'."
+    echo -e "Danh sách card mạng hiện có trên máy:" >&2
+    ip -br link show 2>/dev/null >&2
+    return 1
 }
 
 setup_dns() {
@@ -58,7 +103,7 @@ EOF
 
 # --- 1. Init Namespace ---
 init_netns() {
-    check_interface || return 1
+    detect_interface || return 1
     setup_dns
 
     # Đã cấu hình và có IP sẵn trong namespace?
@@ -169,7 +214,7 @@ open_terminal() {
     ip netns exec "$NS_NAME" sudo -u "$SAVED_USER" -H bash -c "
         export DISPLAY='$SAVED_DISPLAY' XAUTHORITY='$SAVED_XAUTH'
         export WAYLAND_DISPLAY='$SAVED_WAYLAND' XDG_RUNTIME_DIR='$SAVED_XDG'
-        PROMPT_COMMAND='PS1=\"\[\033[1;32m\][LAN:\u@\h \W]\$ \[\033[0m\]\"; unset PROMPT_COMMAND'
+        export PROMPT_COMMAND='case \"\$PS1\" in *\"[LAN]\"*) ;; *) PS1=\"\[\033[1;32m\][LAN] \[\033[0m\]\$PS1\" ;; esac'
         exec bash -i
     "
 }
@@ -210,6 +255,8 @@ open_chromium() {
 stop_netns() {
     pkill -f "chromium-lan" 2>/dev/null || true
     rm -f "$SAVED_HOME/.config/chromium-lan/Singleton"* 2>/dev/null || true
+
+    detect_interface >/dev/null 2>&1 || true
 
     if ip netns list 2>/dev/null | grep -qw "$NS_NAME"; then
         command -v dhcpcd >/dev/null 2>&1 && ip netns exec "$NS_NAME" dhcpcd -k "$ETH_DEV" >/dev/null 2>&1 || true
