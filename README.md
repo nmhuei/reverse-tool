@@ -1,4 +1,34 @@
-# reverse-tool
+# reverse-tool & LAN CLI
+
+Bộ công cụ định tuyến và cô lập mạng cho Linux:
+1. **LAN CLI (`lan`)**: Tiện ích dòng lệnh độc lập, cô lập 100% Terminal và Browser (Chromium) vào mạng LAN qua Linux Network Namespace mà không ảnh hưởng tới mạng chính (Wi-Fi/Internet).
+2. **Reverse Tool (`reverse-tool`)**: Daemon Rust điều phối định tuyến Policy Routing (RPDB Table 52000).
+
+---
+
+## 🚀 LAN Isolated Network CLI (`lan`)
+
+### Cài đặt nhanh 1 dòng (One-line Install)
+```bash
+curl -fsSL https://raw.githubusercontent.com/nmhuei/reverse-tool/minhngo-revtool/install.sh | bash
+```
+
+### Sử dụng nhanh
+| Lệnh | Mô tả |
+|---|---|
+| `sudo lan term` | Mở Terminal kết nối cô lập vào mạng LAN |
+| `sudo lan term --new` | Bật 1 cửa sổ Terminal GUI mới trên Desktop |
+| `sudo lan browser [url]` | Mở Chromium cô lập cắm thẳng vào mạng LAN |
+| `sudo lan run <cmd...>` | Chạy lệnh trực tiếp qua mạng LAN (vd: `sudo lan run nc -lvnp 4444`) |
+| `sudo lan run --root <cmd>` | Chạy lệnh với quyền root qua mạng LAN (vd: `sudo lan run --root tcpdump ...`) |
+| `sudo lan status` | Xem trạng thái so sánh IP giữa Host và mạng LAN |
+| `sudo lan test` | Kiểm tra chẩn đoán kết nối mạng LAN (Ping, DNS, IP) |
+| `sudo lan stop` | Dừng và khôi phục card mạng về hệ thống chính |
+| `lan --help` | Xem trợ giúp (không cần sudo) |
+
+---
+
+## Reverse Tool (Rust Daemon)
 
 A **Policy-Routing Orchestrator with Daemon** for Linux network segmentation and lab routing in Rust.
 
