@@ -127,6 +127,7 @@ init_netns() {
         if ip netns exec "$NS_NAME" ip link show "$ETH_DEV" >/dev/null 2>&1; then
             ip netns exec "$NS_NAME" ip link set lo up 2>/dev/null || true
             ip netns exec "$NS_NAME" ip link set "$ETH_DEV" up 2>/dev/null || true
+            ip netns exec "$NS_NAME" sysctl -w net.ipv4.ping_group_range="0 2147483647" >/dev/null 2>&1 || true
             local cur_ip
             cur_ip=$(ip netns exec "$NS_NAME" ip -4 -br a show "$ETH_DEV" 2>/dev/null | awk '{print $3}')
             if [ -n "$cur_ip" ]; then
@@ -178,6 +179,7 @@ init_netns() {
     # Bat loopback va card LAN
     ip netns exec "$NS_NAME" ip link set lo up 2>/dev/null || true
     ip netns exec "$NS_NAME" ip link set "$ETH_DEV" up 2>/dev/null || true
+    ip netns exec "$NS_NAME" sysctl -w net.ipv4.ping_group_range="0 2147483647" >/dev/null 2>&1 || true
 
     # Tai su dung IP/GW cu neu co
     if [ -n "$HOST_IP" ]; then
