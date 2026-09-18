@@ -12,8 +12,8 @@ ETH_DEV="enp2s0"
 # ------------------------------------------------------------------------------
 # Logging Helpers
 # ------------------------------------------------------------------------------
-log_info()  { echo -e "\033[1;34m[*] $*\033[0m"; }
-log_ok()    { echo -e "\033[1;32m[+] $*\033[0m"; }
+log_info()  { echo -e "\033[1;34m[*] $*\033[0m" >&2; }
+log_ok()    { echo -e "\033[1;32m[+] $*\033[0m" >&2; }
 log_warn()  { echo -e "\033[1;33m[!] $*\033[0m" >&2; }
 log_error() { echo -e "\033[1;31m[-] $*\033[0m" >&2; }
 
@@ -226,11 +226,21 @@ init_netns() {
 # 2. Run Single Command (Exec) Inside LAN Namespace
 # ------------------------------------------------------------------------------
 exec_command() {
+    local as_root=0
+    if [ "$1" = "--root" ] || [ "$1" = "-r" ]; then
+        as_root=1
+        shift
+    fi
+
     if [ $# -eq 0 ]; then
+        local cmd
+        cmd="$(basename "$0")"
         log_error "Thieu cau lenh can thuc thi."
-        echo "Cu phap: sudo $0 exec <command> [args...]"
-        echo "Vi du:   sudo $0 exec curl -s https://api.ipify.org"
-        echo "         sudo $0 exec ping -c 3 1.1.1.1"
+        echo -e "\033[1;33mCu phap:\033[0m sudo $cmd run [--root] <command> [args...]" >&2
+        echo "Vi du:   sudo $cmd run nc -lvnp 4444" >&2
+        echo "         sudo $cmd run nc 192.168.1.50 80" >&2
+        echo "         sudo $cmd run curl -s https://api.ipify.org" >&2
+        echo "         sudo $cmd run --root nc -lvnp 80" >&2
         return 1
     fi
 
@@ -239,13 +249,16 @@ exec_command() {
         return 1
     }
 
-    # Chay lenh duoi quyen REAL_USER voi cac bien moi truong bao toan
-    ip netns exec "$NS_NAME" sudo -u "$REAL_USER" -H \
-        DISPLAY="$SAVED_DISPLAY" \
-        XAUTHORITY="$SAVED_XAUTH" \
-        WAYLAND_DISPLAY="$SAVED_WAYLAND" \
-        XDG_RUNTIME_DIR="$SAVED_XDG_RUNTIME" \
-        "$@"
+    if [ "$as_root" -eq 1 ]; then
+        exec ip netns exec "$NS_NAME" "$@"
+    else
+        exec ip netns exec "$NS_NAME" sudo -u "$REAL_USER" -H \
+            DISPLAY="$SAVED_DISPLAY" \
+            XAUTHORITY="$SAVED_XAUTH" \
+            WAYLAND_DISPLAY="$SAVED_WAYLAND" \
+            XDG_RUNTIME_DIR="$SAVED_XDG_RUNTIME" \
+            "$@"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -523,18 +536,20 @@ show_help() {
     echo -e "\033[1;36m LAN Network Manager - Antigravity\033[0m"
     echo -e " Co lap 100% Terminal & Browser vao mang LAN ($ETH_DEV)"
     echo -e "\033[1;36m================================================================================\033[0m\n"
-    echo -e "\033[1;33mHAI CHUC NANG CHINH:\033[0m"
-    echo -e "  \033[1;32msudo $cmd term\033[0m           -> Mo Terminal ket noi mang LAN"
-    echo -e "  \033[1;32msudo $cmd browser\033[0m        -> Mo Trinh duyet Chromium ket noi mang LAN\n"
+    echo -e "\033[1;33mCAC CHUC NANG CHINH:\033[0m"
+    echo -e "  \033[1;32msudo $cmd term\033[0m             -> Mo Terminal ket noi mang LAN"
+    echo -e "  \033[1;32msudo $cmd browser\033[0m          -> Mo Trinh duyet Chromium ket noi mang LAN"
+    echo -e "  \033[1;32msudo $cmd run <cmd...>\033[0m    -> Chay nhanh 1 lenh qua mang LAN (vd: run nc ...)\n"
     echo -e "\033[1;33mDUNG & HOAN TRA:\033[0m"
-    echo -e "  \033[1;31msudo $cmd stop\033[0m           -> Dong ung dung va khoi phuc card mang ve binh thuong\n"
+    echo -e "  \033[1;31msudo $cmd stop\033[0m             -> Dong ung dung va khoi phuc card mang ve binh thuong\n"
     echo -e "\033[1;33mCAC LENH TIEN ICH KHAC (Tuy chon):\033[0m"
-    echo "  sudo $cmd term --new     -> Bat mot cua so Terminal GUI moi tren Desktop"
-    echo "  sudo $cmd browser [url]  -> Mo trinh duyet voi URL tuy chon"
-    echo "  sudo $cmd status         -> Xem so sanh IP giua mang Host va mang LAN"
-    echo "  sudo $cmd test           -> Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
-    echo "  sudo $cmd exec <cmd...>  -> Chay nhanh 1 lenh bat ky qua mang LAN (vd: exec curl ...)"
-    echo "  $cmd --help              -> Hien thi huong dan nay (khong can sudo)"
+    echo "  sudo $cmd term --new       -> Bat mot cua so Terminal GUI moi tren Desktop"
+    echo "  sudo $cmd run nc ...       -> Chay netcat qua mang LAN (vd: run nc -lvnp 4444)"
+    echo "  sudo $cmd run --root ...   -> Chay lenh voi quyen root (vd: run --root tcpdump ...)"
+    echo "  sudo $cmd browser [url]    -> Mo trinh duyet voi URL tuy chon"
+    echo "  sudo $cmd status           -> Xem so sanh IP giua mang Host va mang LAN"
+    echo "  sudo $cmd test             -> Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
+    echo "  $cmd --help                -> Hien thi huong dan nay (khong can sudo)"
     echo ""
 }
 
