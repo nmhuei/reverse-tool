@@ -47,12 +47,14 @@ ensure_root() {
             log_error "Chuong trinh yeu cau quyen root nhung 'sudo' khong ton tai."
             exit 1
         fi
+        local script_path
+        script_path=$(realpath "$0" 2>/dev/null || echo "$0")
         exec sudo ORIG_DISPLAY="$SAVED_DISPLAY" \
                   ORIG_XAUTH="$SAVED_XAUTH" \
                   ORIG_USER="$SAVED_USER" \
                   ORIG_WAYLAND="$SAVED_WAYLAND" \
                   ORIG_XDG_RUNTIME="$SAVED_XDG_RUNTIME" \
-                  "$0" "$@" || {
+                  "$script_path" "$@" || {
             log_error "That bai khi lay quyen root qua sudo. Vui long kiem tra mat khau."
             exit 1
         }
@@ -514,22 +516,25 @@ stop_netns() {
 # CLI Help / Usage
 # ------------------------------------------------------------------------------
 show_help() {
+    local cmd
+    cmd="$(basename "$0")"
+
     echo -e "\033[1;36m================================================================================\033[0m"
     echo -e "\033[1;36m LAN Network Manager - Antigravity\033[0m"
     echo -e " Co lap 100% Terminal & Browser vao mang LAN ($ETH_DEV)"
     echo -e "\033[1;36m================================================================================\033[0m\n"
     echo -e "\033[1;33mHAI CHUC NANG CHINH:\033[0m"
-    echo -e "  \033[1;32msudo $0 term\033[0m           -> Mo Terminal ket noi mang LAN"
-    echo -e "  \033[1;32msudo $0 browser\033[0m        -> Mo Trinh duyet Chromium ket noi mang LAN\n"
+    echo -e "  \033[1;32msudo $cmd term\033[0m           -> Mo Terminal ket noi mang LAN"
+    echo -e "  \033[1;32msudo $cmd browser\033[0m        -> Mo Trinh duyet Chromium ket noi mang LAN\n"
     echo -e "\033[1;33mDUNG & HOAN TRA:\033[0m"
-    echo -e "  \033[1;31msudo $0 stop\033[0m           -> Dong ung dung va khoi phuc card mang ve binh thuong\n"
+    echo -e "  \033[1;31msudo $cmd stop\033[0m           -> Dong ung dung va khoi phuc card mang ve binh thuong\n"
     echo -e "\033[1;33mCAC LENH TIEN ICH KHAC (Tuy chon):\033[0m"
-    echo "  sudo $0 term --new     -> Bat mot cua so Terminal GUI moi tren Desktop"
-    echo "  sudo $0 browser [url]  -> Mo trinh duyet voi URL tuy chon"
-    echo "  sudo $0 status         -> Xem so sanh IP giua mang Host va mang LAN"
-    echo "  sudo $0 test           -> Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
-    echo "  sudo $0 exec <cmd...>  -> Chay nhanh 1 lenh bat ky qua mang LAN (vd: exec curl ...)"
-    echo "  $0 --help              -> Hien thi huong dan nay (khong can sudo)"
+    echo "  sudo $cmd term --new     -> Bat mot cua so Terminal GUI moi tren Desktop"
+    echo "  sudo $cmd browser [url]  -> Mo trinh duyet voi URL tuy chon"
+    echo "  sudo $cmd status         -> Xem so sanh IP giua mang Host va mang LAN"
+    echo "  sudo $cmd test           -> Kiem tra chan doan ket noi mang LAN (Ping, DNS, IP)"
+    echo "  sudo $cmd exec <cmd...>  -> Chay nhanh 1 lenh bat ky qua mang LAN (vd: exec curl ...)"
+    echo "  $cmd --help              -> Hien thi huong dan nay (khong can sudo)"
     echo ""
 }
 
